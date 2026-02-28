@@ -9,17 +9,60 @@ use lavalink_rs::{model::events::Events, model::track::TrackLoadData};
 use serenity::all::GuildId;
 
 pub fn lavalink_enabled_from_env() -> bool {
-    std::env::var("LAVALINK_HOST").is_ok() && std::env::var("LAVALINK_PASSWORD").is_ok()
+    read_non_empty_env("LAVALINK_HOST").is_ok() && read_non_empty_env("LAVALINK_PASSWORD").is_ok()
+}
+
+fn read_non_empty_env(key: &str) -> anyhow::Result<String> {
+    let value = std::env::var(key).with_context(|| format!("Missing {key}"))?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("{key} is set but empty")
+    }
+    Ok(trimmed.to_string())
+}
+
+fn extract_lavalink_host(raw: &str) -> anyhow::Result<(String, Option<bool>)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("LAVALINK_HOST is empty")
+    }
+
+    let (rest, inferred_ssl) = if let Some(value) = trimmed.strip_prefix("ws://") {
+        (value, Some(false))
+    } else if let Some(value) = trimmed.strip_prefix("wss://") {
+        (value, Some(true))
+    } else if let Some(value) = trimmed.strip_prefix("http://") {
+        (value, Some(false))
+    } else if let Some(value) = trimmed.strip_prefix("https://") {
+        (value, Some(true))
+    } else {
+        (trimmed, None)
+    };
+
+    let without_path = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+
+    if without_path.is_empty() {
+        anyhow::bail!(
+            "Invalid LAVALINK_HOST '{raw}'. Expected host:port, for example 'lavalink:2333'"
+        )
+    }
+
+    Ok((without_path.to_string(), inferred_ssl))
 }
 
 #[cfg(feature = "lavalink")]
 pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result<LavalinkClient> {
-    let host = std::env::var("LAVALINK_HOST").context("Missing LAVALINK_HOST")?;
-    let password = std::env::var("LAVALINK_PASSWORD").context("Missing LAVALINK_PASSWORD")?;
+    let host_raw = read_non_empty_env("LAVALINK_HOST")?;
+    let (host, inferred_ssl) = extract_lavalink_host(&host_raw)?;
+    let password = read_non_empty_env("LAVALINK_PASSWORD")?;
     let is_ssl = std::env::var("LAVALINK_SSL")
         .ok()
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-        .unwrap_or(false);
+        .unwrap_or_else(|| inferred_ssl.unwrap_or(false));
 
     let node = NodeBuilder {
         hostname: host,
