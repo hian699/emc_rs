@@ -1,0 +1,33 @@
+[package]
+name = "emc_rs"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["sqlite", "lavalink"]
+sqlite = ["dep:sqlx"]
+lavalink = ["dep:lavalink-rs"]
+
+[dependencies]
+anyhow = "1.0"
+argon2 = { version = "0.5", features = ["std"] }
+chrono = { version = "0.4", features = ["clock"] }
+dotenvy = "0.15"
+lavalink-rs = { version = "0.14", default-features = true, features = ["serenity"], optional = true }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serenity = { version = "0.12", default-features = false, features = [
+    "client",
+    "gateway",
+    "model",
+    "http",
+    "rustls_backend",
+    "cache",
+    "utils",
+] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite"], optional = true }
+tokio = { version = "1.36", features = ["macros", "rt-multi-thread", "process", "time", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

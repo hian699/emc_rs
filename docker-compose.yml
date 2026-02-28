@@ -1,0 +1,32 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: emc-rs-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SQLITE_DATABASE_URL: sqlite:///data/bot_config.db
+      LAVALINK_HOST: lavalink:2333
+    volumes:
+      - bot_data:/data
+    depends_on:
+      - lavalink
+
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4
+    container_name: emc-rs-lavalink
+    restart: unless-stopped
+    ports:
+      - "2333:2333"
+    environment:
+      _JAVA_OPTIONS: "-Xmx512m"
+      SERVER_PORT: 2333
+      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+    volumes:
+      - ./docker/lavalink/application.yml:/opt/Lavalink/application.yml:ro
+
+volumes:
+  bot_data:
