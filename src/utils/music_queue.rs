@@ -50,10 +50,23 @@ impl MusicQueue {
                 .await
                 .context("Failed to resolve channel")?;
             let guild_channel = channel.guild().context("Target is not a guild channel")?;
-            guild_channel
-                .edit_own_voice_state(&_ctx.http, EditVoiceState::new())
+
+            let bot_user_id = _ctx.cache.current_user().id;
+
+            if let Err(move_err) = guild_channel
+                .guild_id
+                .move_member(&_ctx.http, bot_user_id, _channel_id)
                 .await
-                .context("Failed to update bot voice state")?;
+            {
+                guild_channel
+                    .edit_own_voice_state(&_ctx.http, EditVoiceState::new())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to update bot voice state. move_member error: {move_err}"
+                        )
+                    })?;
+            }
         }
 
         Ok(())

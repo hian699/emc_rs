@@ -45,18 +45,45 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
     };
 
     if query.starts_with("http://") || query.starts_with("https://") {
-        MusicQueue::connect(ctx, voice_channel_id).await?;
+        if let Err(err) = MusicQueue::connect(ctx, voice_channel_id).await {
+            message
+                .channel_id
+                .send_message(
+                    &ctx.http,
+                    CreateMessage::new().embed(warning_embed(
+                        "Voice Connect Failed",
+                        format!(
+                            "Cannot connect to your voice channel. Check bot Connect/Speak permissions.\nDetails: {err}"
+                        ),
+                    )),
+                )
+                .await?;
+            return Ok(());
+        }
 
         let item = if let Some(client) = get_lavalink_client(ctx).await? {
-            let tracks = search_tracks(&client, guild_id, query).await?;
-            let (title, url, duration_ms, encoded) =
-                tracks.into_iter().next().context("No tracks found")?;
-            SongItem {
-                title,
-                url,
-                duration_ms: Some(duration_ms),
-                requested_by: message.author.tag(),
-                lavalink_encoded_track: Some(encoded),
+            match search_tracks(&client, guild_id, query).await {
+                Ok(tracks) => {
+                    let (title, url, duration_ms, encoded) =
+                        tracks.into_iter().next().context("No tracks found")?;
+                    SongItem {
+                        title,
+                        url,
+                        duration_ms: Some(duration_ms),
+                        requested_by: message.author.tag(),
+                        lavalink_encoded_track: Some(encoded),
+                    }
+                }
+                Err(_) => {
+                    let info = YtDlpHelper::get_video_info(query).await?;
+                    SongItem {
+                        title: info.title,
+                        url: info.webpage_url,
+                        duration_ms: info.duration.map(|d| (d * 1000.0) as u64),
+                        requested_by: message.author.tag(),
+                        lavalink_encoded_track: None,
+                    }
+                }
             }
         } else {
             let info = YtDlpHelper::get_video_info(query).await?;
@@ -90,17 +117,31 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
     }
 
     let songs: Vec<SongItem> = if let Some(client) = get_lavalink_client(ctx).await? {
-        search_tracks(&client, guild_id, query)
-            .await?
-            .into_iter()
-            .map(|(title, url, duration_ms, encoded)| SongItem {
-                title,
-                url,
-                duration_ms: Some(duration_ms),
-                requested_by: message.author.tag(),
-                lavalink_encoded_track: Some(encoded),
-            })
-            .collect()
+        match search_tracks(&client, guild_id, query).await {
+            Ok(tracks) => tracks
+                .into_iter()
+                .map(|(title, url, duration_ms, encoded)| SongItem {
+                    title,
+                    url,
+                    duration_ms: Some(duration_ms),
+                    requested_by: message.author.tag(),
+                    lavalink_encoded_track: Some(encoded),
+                })
+                .collect(),
+            Err(_) => {
+                let results = YtDlpHelper::search(query).await?;
+                results
+                    .into_iter()
+                    .map(|video| SongItem {
+                        title: video.title,
+                        url: video.webpage_url,
+                        duration_ms: video.duration.map(|d| (d * 1000.0) as u64),
+                        requested_by: message.author.tag(),
+                        lavalink_encoded_track: None,
+                    })
+                    .collect()
+            }
+        }
     } else {
         let results = YtDlpHelper::search(query).await?;
         results
@@ -133,7 +174,21 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
         .await
         .store_results(cache_key.clone(), songs.clone());
 
-    MusicQueue::connect(ctx, voice_channel_id).await?;
+    if let Err(err) = MusicQueue::connect(ctx, voice_channel_id).await {
+        message
+            .channel_id
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().embed(warning_embed(
+                    "Voice Connect Failed",
+                    format!(
+                        "Cannot connect to your voice channel. Check bot Connect/Speak permissions.\nDetails: {err}"
+                    ),
+                )),
+            )
+            .await?;
+        return Ok(());
+    }
 
     let options: Vec<CreateSelectMenuOption> = songs
         .iter()

@@ -9,7 +9,7 @@ use lavalink_rs::{model::events::Events, model::track::TrackLoadData};
 use serenity::all::GuildId;
 
 pub fn lavalink_enabled_from_env() -> bool {
-    read_non_empty_env("LAVALINK_HOST").is_ok() && read_non_empty_env("LAVALINK_PASSWORD").is_ok()
+    read_non_empty_env("LAVALINK_HOST").is_ok() && read_lavalink_password_from_env().is_ok()
 }
 
 fn read_non_empty_env(key: &str) -> anyhow::Result<String> {
@@ -19,6 +19,23 @@ fn read_non_empty_env(key: &str) -> anyhow::Result<String> {
         anyhow::bail!("{key} is set but empty")
     }
     Ok(trimmed.to_string())
+}
+
+fn read_first_non_empty_env(keys: &[&str]) -> anyhow::Result<String> {
+    for key in keys {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+    }
+
+    anyhow::bail!("Missing non-empty env in keys: {}", keys.join(", "))
+}
+
+fn read_lavalink_password_from_env() -> anyhow::Result<String> {
+    read_first_non_empty_env(&["LAVALINK_PASSWORD", "LAVALINK_SERVER_PASSWORD"])
 }
 
 fn extract_lavalink_host(raw: &str) -> anyhow::Result<(String, Option<bool>)> {
@@ -58,7 +75,7 @@ fn extract_lavalink_host(raw: &str) -> anyhow::Result<(String, Option<bool>)> {
 pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result<LavalinkClient> {
     let host_raw = read_non_empty_env("LAVALINK_HOST")?;
     let (host, inferred_ssl) = extract_lavalink_host(&host_raw)?;
-    let password = read_non_empty_env("LAVALINK_PASSWORD")?;
+    let password = read_lavalink_password_from_env()?;
     let is_ssl = std::env::var("LAVALINK_SSL")
         .ok()
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
@@ -98,12 +115,16 @@ pub async fn search_tracks(
         format!("ytsearch:{query}")
     };
 
-    let loaded = client
-        .load_tracks(guild_id, &identifier);
-    let loaded = tokio::time::timeout(Duration::from_secs(12), loaded)
-        .await
-        .context("Timed out while loading tracks from Lavalink")?
-        .context("Failed to load tracks from lavalink")?;
+    let loaded = match tokio::time::timeout(Duration::from_secs(12), client.load_tracks(guild_id, &identifier)).await {
+        Ok(Ok(value)) => value,
+        _ => {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            tokio::time::timeout(Duration::from_secs(12), client.load_tracks(guild_id, &identifier))
+                .await
+                .context("Timed out while loading tracks from Lavalink")?
+                .with_context(|| format!("Failed to load tracks from lavalink for identifier: {identifier}"))?
+        }
+    };
 
     let mut out = Vec::new();
     if let Some(data) = loaded.data {
