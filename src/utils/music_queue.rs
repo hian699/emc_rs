@@ -10,6 +10,7 @@ use serenity::client::Context;
 use tokio::task::JoinHandle;
 
 use crate::get_lavalink_client;
+use crate::utils::discord_embed::error_embed;
 #[cfg(feature = "lavalink")]
 use crate::utils::lavalink_client::try_create_player_context;
 
@@ -41,7 +42,7 @@ impl MusicQueue {
         }
     }
 
-    pub async fn connect(&mut self, _ctx: &Context, _channel_id: ChannelId) -> anyhow::Result<()> {
+    pub async fn connect(_ctx: &Context, _channel_id: ChannelId) -> anyhow::Result<()> {
         #[cfg(feature = "lavalink")]
         {
             let channel = _channel_id
@@ -58,28 +59,36 @@ impl MusicQueue {
         Ok(())
     }
 
-    pub async fn enqueue_song(&mut self, _ctx: &Context, song: SongItem) -> anyhow::Result<()> {
-        let song_for_track = song.clone();
+    pub fn enqueue_song(&mut self, song: SongItem) -> bool {
         let is_first = self.current.is_none();
         if is_first {
             self.current = Some(song.clone());
         }
         self.songs.push_back(song);
 
+        is_first
+    }
+
+    pub async fn sync_lavalink_enqueue(
+        _ctx: &Context,
+        guild_id: GuildId,
+        song: &SongItem,
+        play_now: bool,
+    ) -> anyhow::Result<()> {
         #[cfg(feature = "lavalink")]
         {
             if let Some(client) = get_lavalink_client(_ctx).await? {
-                let encoded = song_for_track.lavalink_encoded_track.clone();
+                let encoded = song.lavalink_encoded_track.clone();
                 if let Some(encoded) = encoded {
-                    let player = if let Some(existing) = client.get_player_context(self.guild_id) {
+                    let player = if let Some(existing) = client.get_player_context(guild_id) {
                         existing
                     } else {
-                        try_create_player_context(&client, self.guild_id).await?
+                        try_create_player_context(&client, guild_id).await?
                     };
 
-                    let track = track_from_song(song_for_track, encoded);
+                    let track = track_from_song(song.clone(), encoded);
                     player.queue(track.clone())?;
-                    if is_first {
+                    if play_now {
                         player.play_now(&track).await?;
                     }
                 }
@@ -118,7 +127,10 @@ impl MusicQueue {
 
     pub async fn send_error(&self, ctx: &Context, message: &str) -> anyhow::Result<()> {
         self.text_channel_id
-            .say(&ctx.http, format!("Music error: {message}"))
+            .send_message(
+                &ctx.http,
+                serenity::all::CreateMessage::new().embed(error_embed("Music Error", message)),
+            )
             .await
             .context("Failed to send error message")?;
         Ok(())

@@ -1,6 +1,7 @@
 use anyhow::Context as _;
 use serenity::all::{
-    CreateActionRow, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, Message,
+    CreateActionRow, CreateMessage, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption,
+    Message,
 };
 use serenity::client::Context;
 
@@ -8,7 +9,9 @@ use crate::components::select_menu::music_search::format_duration;
 use crate::get_lavalink_client;
 use crate::get_state;
 use crate::utils::access_control::ensure_music_channel_for_message;
+use crate::utils::discord_embed::{info_embed, success_embed, warning_embed};
 use crate::utils::lavalink_client::search_tracks;
+use crate::utils::music_queue::MusicQueue;
 use crate::utils::music_queue::SongItem;
 use crate::utils::ytdlp_helper::YtDlpHelper;
 
@@ -42,6 +45,8 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
     };
 
     if query.starts_with("http://") || query.starts_with("https://") {
+        MusicQueue::connect(ctx, voice_channel_id).await?;
+
         let item = if let Some(client) = get_lavalink_client(ctx).await? {
             let tracks = search_tracks(&client, guild_id, query).await?;
             let (title, url, duration_ms, encoded) =
@@ -64,21 +69,20 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
             }
         };
 
-        {
+        let should_play_now = {
             let mut q = queue.write().await;
-            q.connect(ctx, voice_channel_id).await?;
-            q.enqueue_song(ctx, item.clone()).await?;
-        }
+            q.enqueue_song(item.clone())
+        };
+        MusicQueue::sync_lavalink_enqueue(ctx, guild_id, &item, should_play_now).await?;
 
         message
             .channel_id
-            .say(
+            .send_message(
                 &ctx.http,
-                format!(
-                    "Added **{}** ({})",
-                    item.title,
-                    format_duration(item.duration_ms)
-                ),
+                CreateMessage::new().embed(success_embed(
+                    "Song Added",
+                    format!("**{}** ({})", item.title, format_duration(item.duration_ms)),
+                )),
             )
             .await?;
 
@@ -114,7 +118,10 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
     if songs.is_empty() {
         message
             .channel_id
-            .say(&ctx.http, "No search results found")
+            .send_message(
+                &ctx.http,
+                CreateMessage::new().embed(warning_embed("No Results", "No search results found")),
+            )
             .await?;
         return Ok(());
     }
@@ -126,10 +133,7 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
         .await
         .store_results(cache_key.clone(), songs.clone());
 
-    {
-        let mut q = queue.write().await;
-        q.connect(ctx, voice_channel_id).await?;
-    }
+    MusicQueue::connect(ctx, voice_channel_id).await?;
 
     let options: Vec<CreateSelectMenuOption> = songs
         .iter()
@@ -152,8 +156,8 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
         .channel_id
         .send_message(
             &ctx.http,
-            serenity::all::CreateMessage::new()
-                .content("Search results")
+            CreateMessage::new()
+                .embed(info_embed("Search Results", "Select one song from the menu below."))
                 .components(vec![CreateActionRow::SelectMenu(select)]),
         )
         .await?;

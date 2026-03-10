@@ -1,6 +1,7 @@
 use anyhow::{Context as _, anyhow};
 use serde::Deserialize;
 use tokio::process::Command;
+use tokio::time::{Duration, timeout};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct YtDlpVideoInfo {
@@ -11,17 +12,21 @@ pub struct YtDlpVideoInfo {
 
 pub struct YtDlpHelper;
 
+const YT_DLP_TIMEOUT_SECS: u64 = 20;
+
 impl YtDlpHelper {
     pub fn get_command() -> String {
         std::env::var("YT_DLP_BIN").unwrap_or_else(|_| "yt-dlp".to_string())
     }
 
     pub async fn execute(args: &[&str]) -> anyhow::Result<String> {
-        let output = Command::new(Self::get_command())
-            .args(args)
-            .output()
-            .await
-            .context("Failed to execute yt-dlp")?;
+        let output = timeout(
+            Duration::from_secs(YT_DLP_TIMEOUT_SECS),
+            Command::new(Self::get_command()).args(args).output(),
+        )
+        .await
+        .context("yt-dlp execution timed out")?
+        .context("Failed to execute yt-dlp")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();

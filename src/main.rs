@@ -6,6 +6,7 @@ mod utils;
 
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 #[cfg(feature = "lavalink")]
@@ -74,9 +75,21 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!("Connected as {}", ready.user.tag());
 
-        if let Err(err) = init_lavalink_if_needed(&ctx, ready.user.id).await {
-            warn!("Lavalink init skipped/failed: {err}");
-        }
+        let lavalink_ctx = ctx.clone();
+        let bot_user_id = ready.user.id;
+        tokio::spawn(async move {
+            let init_result = tokio::time::timeout(
+                Duration::from_secs(12),
+                init_lavalink_if_needed(&lavalink_ctx, bot_user_id),
+            )
+            .await;
+
+            match init_result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => warn!("Lavalink init skipped/failed: {err}"),
+                Err(_) => warn!("Lavalink init timed out after 12s"),
+            }
+        });
 
         let commands = commands::register_slash_commands();
         if let Err(err) = Command::set_global_commands(&ctx.http, commands).await {
@@ -87,14 +100,20 @@ impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         match interaction {
             Interaction::Command(command) => {
-                if let Err(err) = commands::dispatch_slash(&ctx, &command).await {
-                    error!("Slash command failed: {err}");
-                }
+                let ctx = ctx.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = commands::dispatch_slash(&ctx, &command).await {
+                        error!("Slash command failed: {err}");
+                    }
+                });
             }
             Interaction::Component(component) => {
-                if let Err(err) = components::dispatch_component(&ctx, &component).await {
-                    error!("Component interaction failed: {err}");
-                }
+                let ctx = ctx.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = components::dispatch_component(&ctx, &component).await {
+                        error!("Component interaction failed: {err}");
+                    }
+                });
             }
             _ => {}
         }
@@ -105,9 +124,12 @@ impl EventHandler for Handler {
             return;
         }
 
-        if let Err(err) = commands::dispatch_message(&ctx, &message).await {
-            error!("Message command failed: {err}");
-        }
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            if let Err(err) = commands::dispatch_message(&ctx, &message).await {
+                error!("Message command failed: {err}");
+            }
+        });
     }
 
     async fn voice_server_update(&self, ctx: Context, event: VoiceServerUpdateEvent) {
@@ -123,7 +145,7 @@ impl EventHandler for Handler {
         if let Err(err) =
             events::voice_state_update::on_temp_voice_channels::run(&ctx, _old.as_ref(), &new).await
         {
-            error!("Temp voice handler failed: {err}");
+            error!("Private temp voice handler failed: {err}");
         }
 
         #[cfg(feature = "lavalink")]

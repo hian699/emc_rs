@@ -5,6 +5,7 @@ use serenity::all::{
 use serenity::client::Context;
 
 use crate::get_state;
+use crate::utils::discord_embed::info_embed;
 
 pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::Result<()> {
     let guild_id = interaction.guild_id.context("Component not in guild")?;
@@ -18,7 +19,8 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
         .create_response(
             &ctx.http,
             CreateInteractionResponse::UpdateMessage(
-                CreateInteractionResponseMessage::new().content("Skipped current song"),
+                CreateInteractionResponseMessage::new()
+                    .embed(info_embed("Skipped", "Skipped current song")),
             ),
         )
         .await?;

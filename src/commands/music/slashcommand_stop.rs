@@ -5,6 +5,7 @@ use serenity::all::{
 use serenity::client::Context;
 
 use crate::get_state;
+use crate::utils::discord_embed::info_embed;
 
 pub fn register() -> CreateCommand {
     CreateCommand::new("stop").description("Stop playback and clear queue")
@@ -23,7 +24,8 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
         .create_response(
             &ctx.http,
             CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new().content("Stopped playback"),
+                CreateInteractionResponseMessage::new()
+                    .embed(info_embed("Stopped", "Stopped playback and cleared queue")),
             ),
         )
         .await?;

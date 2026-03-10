@@ -1,8 +1,9 @@
 use anyhow::Context as _;
-use serenity::all::Message;
+use serenity::all::{CreateMessage, Message};
 use serenity::client::Context;
 
 use crate::get_state;
+use crate::utils::discord_embed::info_embed;
 
 pub async fn run(ctx: &Context, message: &Message) -> anyhow::Result<()> {
     let guild_id = message
@@ -17,7 +18,10 @@ pub async fn run(ctx: &Context, message: &Message) -> anyhow::Result<()> {
 
     message
         .channel_id
-        .say(&ctx.http, "Stopped playback")
+        .send_message(
+            &ctx.http,
+            CreateMessage::new().embed(info_embed("Stopped", "Stopped playback and cleared queue")),
+        )
         .await?;
     Ok(())
 }

@@ -1,5 +1,6 @@
 pub mod access_control;
 pub mod cookie_manager;
+pub mod discord_embed;
 pub mod guild_settings;
 pub mod lavalink_client;
 pub mod level_calculator;

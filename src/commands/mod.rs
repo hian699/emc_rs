@@ -8,6 +8,37 @@ use anyhow::anyhow;
 use serenity::all::{CommandInteraction, CreateCommand, Message, ResolvedValue};
 use serenity::client::Context;
 
+use crate::utils::access_control::{
+    ensure_developer_for_message, ensure_developer_for_slash, ensure_owner_for_message,
+    ensure_owner_for_slash,
+};
+
+#[derive(Clone, Copy)]
+enum CommandRole {
+    Owner,
+    Developer,
+    User,
+}
+
+fn required_slash_role(name: &str) -> Option<CommandRole> {
+    match name {
+        "timeout" | "deletemessage" | "security-lockdown" | "config-set" | "config-show"
+        | "reload" => Some(CommandRole::Owner),
+        "eval" => Some(CommandRole::Developer),
+        "ping" | "random" | "play" | "skip" | "stop" => Some(CommandRole::User),
+        _ => None,
+    }
+}
+
+fn required_message_role(name: &str) -> Option<CommandRole> {
+    match name {
+        "!reload" => Some(CommandRole::Owner),
+        "!eval" => Some(CommandRole::Developer),
+        "!ping" | "!play" | "!skip" | "!stop" => Some(CommandRole::User),
+        _ => None,
+    }
+}
+
 pub fn register_slash_commands() -> Vec<CreateCommand> {
     let mut commands = Vec::new();
     commands.extend(utility::register());
@@ -19,6 +50,18 @@ pub fn register_slash_commands() -> Vec<CreateCommand> {
 }
 
 pub async fn dispatch_slash(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<()> {
+    if let Some(role) = required_slash_role(command.data.name.as_str()) {
+        let allowed = match role {
+            CommandRole::Owner => ensure_owner_for_slash(ctx, command).await?,
+            CommandRole::Developer => ensure_developer_for_slash(ctx, command).await?,
+            CommandRole::User => true,
+        };
+
+        if !allowed {
+            return Ok(());
+        }
+    }
+
     match command.data.name.as_str() {
         "ping" => utility::slashcommand_ping::run(ctx, command).await,
         "random" => user::slashcommand_random::run(ctx, command).await,
@@ -40,6 +83,20 @@ pub async fn dispatch_slash(ctx: &Context, command: &CommandInteraction) -> anyh
 
 pub async fn dispatch_message(ctx: &Context, message: &Message) -> anyhow::Result<()> {
     let content = message.content.trim();
+
+    if let Some(name) = content.split_whitespace().next() {
+        if let Some(role) = required_message_role(name) {
+            let allowed = match role {
+                CommandRole::Owner => ensure_owner_for_message(ctx, message).await?,
+                CommandRole::Developer => ensure_developer_for_message(ctx, message).await?,
+                CommandRole::User => true,
+            };
+
+            if !allowed {
+                return Ok(());
+            }
+        }
+    }
 
     if content == "!ping" {
         return utility::messagecommand_ping::run(ctx, message).await;

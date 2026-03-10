@@ -5,6 +5,7 @@ use serenity::all::{
 use serenity::client::Context;
 
 use crate::get_state;
+use crate::utils::discord_embed::info_embed;
 
 pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::Result<()> {
     let guild_id = interaction.guild_id.context("Component not in guild")?;
@@ -19,7 +20,8 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
         .create_response(
             &ctx.http,
             CreateInteractionResponse::UpdateMessage(
-                CreateInteractionResponseMessage::new().content("Stopped and disconnected"),
+                CreateInteractionResponseMessage::new()
+                    .embed(info_embed("Stopped", "Stopped and disconnected")),
             ),
         )
         .await?;

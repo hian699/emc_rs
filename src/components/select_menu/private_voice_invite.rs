@@ -31,12 +31,12 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
         .read()
         .await
         .get_owner(voice_channel_id)
-        .context("This voice channel is not private")?;
+        .context("This voice channel is not a private temp voice")?;
 
     let settings = state.settings_repo.get_settings(guild_id).await?;
     if !settings.allow_private_voice_channel(voice_channel_id) {
         return Err(anyhow::anyhow!(
-            "This private voice channel is not allowed by configuration"
+            "This private temp voice channel is not allowed by configuration"
         ));
     }
 
@@ -60,7 +60,7 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
             &ctx.http,
             CreateInteractionResponse::UpdateMessage(
                 CreateInteractionResponseMessage::new().content(format!(
-                    "Invited <@{}> to your private voice",
+                    "Invited <@{}> to your private temp voice",
                     user_id.get()
                 )),
             ),

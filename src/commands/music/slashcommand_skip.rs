@@ -5,6 +5,7 @@ use serenity::all::{
 use serenity::client::Context;
 
 use crate::get_state;
+use crate::utils::discord_embed::info_embed;
 
 pub fn register() -> CreateCommand {
     CreateCommand::new("skip").description("Skip current song")
@@ -22,7 +23,8 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
         .create_response(
             &ctx.http,
             CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new().content("Skipped current song"),
+                CreateInteractionResponseMessage::new()
+                    .embed(info_embed("Skipped", "Skipped current song")),
             ),
         )
         .await?;

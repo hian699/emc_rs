@@ -4,6 +4,28 @@ use serenity::client::Context;
 
 use crate::get_state;
 
+fn build_private_voice_channel_name(new_state: &VoiceState) -> String {
+    let owner_name = new_state
+        .member
+        .as_ref()
+        .map(|member| {
+            member
+                .nick
+                .as_deref()
+                .unwrap_or(member.user.name.as_str())
+                .trim()
+                .to_string()
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| format!("User {}", new_state.user_id.get()));
+
+    let mut channel_name = format!("{}'s Private Voice", owner_name);
+    if channel_name.chars().count() > 100 {
+        channel_name = channel_name.chars().take(100).collect();
+    }
+    channel_name
+}
+
 pub async fn run(
     ctx: &Context,
     old_state: Option<&VoiceState>,
@@ -26,7 +48,7 @@ pub async fn run(
     ) {
         let joined_lobby = new_channel_id == Some(lobby_id) && old_channel_id != Some(lobby_id);
         if joined_lobby {
-            let channel_name = format!("temp-{}", new_state.user_id.get());
+            let channel_name = build_private_voice_channel_name(new_state);
             let created_channel = guild_id
                 .create_channel(
                     &ctx.http,
@@ -35,12 +57,12 @@ pub async fn run(
                         .category(category_id),
                 )
                 .await
-                .context("Failed to create temporary voice channel")?;
+                .context("Failed to create private temp voice channel")?;
 
             guild_id
                 .move_member(&ctx.http, new_state.user_id, created_channel.id)
                 .await
-                .context("Failed to move user to temporary voice channel")?;
+                .context("Failed to move user to private temp voice channel")?;
 
             state
                 .private_voice_registry
@@ -53,7 +75,7 @@ pub async fn run(
                     .say(
                         &ctx.http,
                         format!(
-                            "Created temp voice <#{}> for <@{}>",
+                            "Created private temp voice <#{}> for <@{}>",
                             created_channel.id.get(),
                             new_state.user_id.get()
                         ),
@@ -95,7 +117,10 @@ pub async fn run(
                     let _ = mod_channel_id
                         .say(
                             &ctx.http,
-                            format!("Deleted empty temp voice <#{}>", left_channel_id.get()),
+                            format!(
+                                "Deleted empty private temp voice <#{}>",
+                                left_channel_id.get()
+                            ),
                         )
                         .await;
                 }

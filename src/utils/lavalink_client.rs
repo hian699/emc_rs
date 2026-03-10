@@ -73,12 +73,12 @@ pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result
         session_id: None,
     };
 
-    Ok(LavalinkClient::new(
-        Events::default(),
-        vec![node],
-        NodeDistributionStrategy::new(),
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        LavalinkClient::new(Events::default(), vec![node], NodeDistributionStrategy::new()),
     )
-    .await)
+    .await
+    .context("Timed out while connecting to Lavalink")
 }
 
 #[cfg(not(feature = "lavalink"))]
@@ -99,8 +99,10 @@ pub async fn search_tracks(
     };
 
     let loaded = client
-        .load_tracks(guild_id, &identifier)
+        .load_tracks(guild_id, &identifier);
+    let loaded = tokio::time::timeout(Duration::from_secs(12), loaded)
         .await
+        .context("Timed out while loading tracks from Lavalink")?
         .context("Failed to load tracks from lavalink")?;
 
     let mut out = Vec::new();
@@ -146,9 +148,9 @@ pub async fn try_create_player_context(
         .get_connection_info(guild_id, Duration::from_secs(8))
         .await
         .context("Missing voice connection info from Discord events")?;
-    let player = client
-        .create_player_context(guild_id, info)
+    let player = tokio::time::timeout(Duration::from_secs(8), client.create_player_context(guild_id, info))
         .await
+        .context("Timed out while creating lavalink player context")?
         .context("Failed to create lavalink player context")?;
     Ok(player)
 }
