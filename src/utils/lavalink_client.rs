@@ -38,6 +38,22 @@ fn read_lavalink_password_from_env() -> anyhow::Result<String> {
     read_first_non_empty_env(&["LAVALINK_PASSWORD", "LAVALINK_SERVER_PASSWORD"])
 }
 
+#[cfg(feature = "lavalink")]
+async fn validate_lavalink_host(host: &str) -> anyhow::Result<()> {
+    let mut addresses = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host(host))
+        .await
+        .with_context(|| format!("Timed out while resolving Lavalink host '{host}'"))?
+        .with_context(|| {
+            format!(
+                "Failed to resolve Lavalink host '{host}'. If bot and Lavalink are not on the same Docker network, set LAVALINK_HOST to a reachable internal domain, public domain, or IP instead of a Docker-only service name"
+            )
+        })?;
+
+    let _ = addresses.next();
+
+    Ok(())
+}
+
 fn extract_lavalink_host(raw: &str) -> anyhow::Result<(String, Option<bool>)> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -76,10 +92,12 @@ pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result
     let host_raw = read_non_empty_env("LAVALINK_HOST")?;
     let (host, inferred_ssl) = extract_lavalink_host(&host_raw)?;
     let password = read_lavalink_password_from_env()?;
+    validate_lavalink_host(&host).await?;
     let is_ssl = std::env::var("LAVALINK_SSL")
         .ok()
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
         .unwrap_or_else(|| inferred_ssl.unwrap_or(false));
+    let host_for_error = host.clone();
 
     let node = NodeBuilder {
         hostname: host,
@@ -96,6 +114,11 @@ pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result
     )
     .await
     .context("Timed out while connecting to Lavalink")
+    .with_context(|| {
+        format!(
+            "Failed to connect to Lavalink at {host_for_error}. Check LAVALINK_HOST, password, SSL setting, and Docker/Dokploy network reachability"
+        )
+    })
 }
 
 #[cfg(not(feature = "lavalink"))]

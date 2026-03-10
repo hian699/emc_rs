@@ -179,6 +179,10 @@ async fn load_state() -> anyhow::Result<Arc<BotState>> {
         private_voice_registry: Arc::new(RwLock::new(PrivateVoiceRegistry::new())),
         #[cfg(feature = "lavalink")]
         lavalink_client: Arc::new(RwLock::new(None::<LavalinkClient>)),
+        #[cfg(feature = "lavalink")]
+        lavalink_init_lock: Arc::new(tokio::sync::Mutex::new(())),
+        #[cfg(feature = "lavalink")]
+        lavalink_retry_after: Arc::new(RwLock::new(None)),
     }))
 }
 
@@ -192,12 +196,42 @@ async fn init_lavalink_if_needed(
     }
 
     let state = get_state(ctx).await?;
-    let mut slot = state.lavalink_client.write().await;
-    if slot.is_none() {
-        let client = create_client(bot_user_id).await?;
-        *slot = Some(client);
+    if state.lavalink_client.read().await.is_some() {
+        return Ok(());
     }
-    Ok(())
+
+    if let Some(retry_after) = *state.lavalink_retry_after.read().await {
+        if retry_after > std::time::Instant::now() {
+            return Ok(());
+        }
+    }
+
+    let _init_guard = state.lavalink_init_lock.lock().await;
+    if state.lavalink_client.read().await.is_some() {
+        return Ok(());
+    }
+
+    if let Some(retry_after) = *state.lavalink_retry_after.read().await {
+        if retry_after > std::time::Instant::now() {
+            return Ok(());
+        }
+    }
+
+    match create_client(bot_user_id).await {
+        Ok(client) => {
+            *state.lavalink_retry_after.write().await = None;
+            let mut slot = state.lavalink_client.write().await;
+            if slot.is_none() {
+                *slot = Some(client);
+            }
+            Ok(())
+        }
+        Err(err) => {
+            *state.lavalink_retry_after.write().await =
+                Some(std::time::Instant::now() + Duration::from_secs(15));
+            Err(err)
+        }
+    }
 }
 
 #[cfg(not(feature = "lavalink"))]
@@ -211,6 +245,16 @@ async fn init_lavalink_if_needed(
 #[cfg(feature = "lavalink")]
 pub async fn get_lavalink_client(ctx: &Context) -> anyhow::Result<Option<LavalinkClient>> {
     let state = get_state(ctx).await?;
+    if let Some(client) = state.lavalink_client.read().await.clone() {
+        return Ok(Some(client));
+    }
+
+    if !lavalink_enabled_from_env() {
+        return Ok(None);
+    }
+
+    let bot_user_id = ctx.cache.current_user().id;
+    init_lavalink_if_needed(ctx, bot_user_id).await?;
     Ok(state.lavalink_client.read().await.clone())
 }
 

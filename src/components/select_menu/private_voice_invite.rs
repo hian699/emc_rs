@@ -30,8 +30,12 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
         .private_voice_registry
         .read()
         .await
-        .get_owner(voice_channel_id)
+        .get_entry(voice_channel_id)
         .context("This voice channel is not a private temp voice")?;
+
+    if !matches!(owner.kind, crate::utils::private_voice_registry::TempVoiceChannelKind::Private) {
+        return Err(anyhow::anyhow!("This temp voice channel is public, not private"));
+    }
 
     let settings = state.settings_repo.get_settings(guild_id).await?;
     if !settings.allow_private_voice_channel(voice_channel_id) {
@@ -40,7 +44,7 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
         ));
     }
 
-    if owner != interaction.user.id {
+    if owner.owner != interaction.user.id {
         return Err(anyhow::anyhow!("Only owner can invite users"));
     }
 

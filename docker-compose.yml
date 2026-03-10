@@ -7,7 +7,7 @@ services:
       - .env
     environment:
       SQLITE_DATABASE_URL: sqlite:///data/bot_config.db
-      LAVALINK_HOST: lavalink:2333
+      LAVALINK_HOST: "${LAVALINK_HOST:-lavalink:2333}"
       LAVALINK_PASSWORD: "${LAVALINK_SERVER_PASSWORD:-youshallnotpass}"
     volumes:
       - bot_data:/data

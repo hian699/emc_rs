@@ -1,10 +1,15 @@
 use anyhow::Context as _;
-use serenity::all::{ChannelType, CreateChannel, VoiceState};
+use serenity::all::{
+    ChannelType, CreateChannel, PermissionOverwrite, PermissionOverwriteType, Permissions, RoleId,
+    VoiceState,
+};
 use serenity::client::Context;
+use tracing::warn;
 
 use crate::get_state;
+use crate::utils::private_voice_registry::TempVoiceChannelKind;
 
-fn build_private_voice_channel_name(new_state: &VoiceState) -> String {
+fn build_temp_voice_channel_name(kind: TempVoiceChannelKind, new_state: &VoiceState) -> String {
     let owner_name = new_state
         .member
         .as_ref()
@@ -19,11 +24,22 @@ fn build_private_voice_channel_name(new_state: &VoiceState) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| format!("User {}", new_state.user_id.get()));
 
-    let mut channel_name = format!("{}'s Private Voice", owner_name);
+    let suffix = match kind {
+        TempVoiceChannelKind::Public => "Voice",
+        TempVoiceChannelKind::Private => "Private Voice",
+    };
+    let mut channel_name = format!("{}'s {}", owner_name, suffix);
     if channel_name.chars().count() > 100 {
         channel_name = channel_name.chars().take(100).collect();
     }
     channel_name
+}
+
+fn kind_label(kind: TempVoiceChannelKind) -> &'static str {
+    match kind {
+        TempVoiceChannelKind::Public => "public",
+        TempVoiceChannelKind::Private => "private",
+    }
 }
 
 pub async fn run(
@@ -42,40 +58,81 @@ pub async fn run(
     let state = get_state(ctx).await?;
     let settings = state.settings_repo.get_settings(guild_id).await?;
 
-    if let (Some(lobby_id), Some(category_id)) = (
-        settings.temp_voice_lobby_channel_id,
-        settings.temp_voice_category_id,
-    ) {
-        let joined_lobby = new_channel_id == Some(lobby_id) && old_channel_id != Some(lobby_id);
-        if joined_lobby {
-            let channel_name = build_private_voice_channel_name(new_state);
+    if let Some(category_id) = settings.temp_voice_category_id {
+        let joined_public_lobby = settings.temp_voice_public_lobby_channel_id.is_some()
+            && new_channel_id == settings.temp_voice_public_lobby_channel_id
+            && old_channel_id != settings.temp_voice_public_lobby_channel_id;
+        let joined_private_lobby = settings.temp_voice_private_lobby_channel_id.is_some()
+            && new_channel_id == settings.temp_voice_private_lobby_channel_id
+            && old_channel_id != settings.temp_voice_private_lobby_channel_id;
+
+        let joined_kind = if joined_private_lobby {
+            Some(TempVoiceChannelKind::Private)
+        } else if joined_public_lobby {
+            Some(TempVoiceChannelKind::Public)
+        } else {
+            None
+        };
+
+        if let Some(kind) = joined_kind {
+            let channel_name = build_temp_voice_channel_name(kind, new_state);
+            let mut builder = CreateChannel::new(channel_name)
+                .kind(ChannelType::Voice)
+                .category(category_id);
+
+            if kind == TempVoiceChannelKind::Private {
+                builder = builder.permissions(vec![
+                    PermissionOverwrite {
+                        allow: Permissions::VIEW_CHANNEL | Permissions::CONNECT,
+                        deny: Permissions::empty(),
+                        kind: PermissionOverwriteType::Member(new_state.user_id),
+                    },
+                    PermissionOverwrite {
+                        allow: Permissions::empty(),
+                        deny: Permissions::VIEW_CHANNEL | Permissions::CONNECT,
+                        kind: PermissionOverwriteType::Role(RoleId::new(guild_id.get())),
+                    },
+                ]);
+            }
+
             let created_channel = guild_id
                 .create_channel(
                     &ctx.http,
-                    CreateChannel::new(channel_name)
-                        .kind(ChannelType::Voice)
-                        .category(category_id),
+                    builder,
                 )
                 .await
-                .context("Failed to create private temp voice channel")?;
+                .with_context(|| {
+                    format!("Failed to create {} temp voice channel", kind_label(kind))
+                })?;
 
-            guild_id
-                .move_member(&ctx.http, new_state.user_id, created_channel.id)
-                .await
-                .context("Failed to move user to private temp voice channel")?;
+            if let Err(err) = guild_id.move_member(&ctx.http, new_state.user_id, created_channel.id).await {
+                if let Err(delete_err) = created_channel.delete(&ctx.http).await {
+                    warn!(
+                        "Failed to clean up {} temp voice {} after move failure: {}",
+                        kind_label(kind),
+                        created_channel.id,
+                        delete_err
+                    );
+                }
+
+                return Err(err).with_context(|| {
+                    format!("Failed to move user to {} temp voice channel", kind_label(kind))
+                });
+            }
 
             state
                 .private_voice_registry
                 .write()
                 .await
-                .set_owner(created_channel.id, new_state.user_id);
+                .set_channel(created_channel.id, new_state.user_id, kind);
 
             if let Some(mod_channel_id) = settings.mod_channel_id {
                 let _ = mod_channel_id
                     .say(
                         &ctx.http,
                         format!(
-                            "Created private temp voice <#{}> for <@{}>",
+                            "Created {} temp voice <#{}> for <@{}>",
+                            kind_label(kind),
                             created_channel.id.get(),
                             new_state.user_id.get()
                         ),
@@ -86,14 +143,13 @@ pub async fn run(
     }
 
     if let Some(left_channel_id) = old_channel_id {
-        let is_temp_channel = state
+        let temp_voice_entry = state
             .private_voice_registry
             .read()
             .await
-            .get_owner(left_channel_id)
-            .is_some();
+            .get_entry(left_channel_id);
 
-        if is_temp_channel {
+        if let Some(entry) = temp_voice_entry {
             let is_empty = if let Some(guild) = guild_id.to_guild_cached(&ctx.cache) {
                 guild
                     .voice_states
@@ -106,23 +162,49 @@ pub async fn run(
             };
 
             if is_empty {
-                let _ = left_channel_id.delete(&ctx.http).await;
-                state
-                    .private_voice_registry
-                    .write()
-                    .await
-                    .delete_owner(left_channel_id);
+                match left_channel_id.delete(&ctx.http).await {
+                    Ok(_) => {
+                        state
+                            .private_voice_registry
+                            .write()
+                            .await
+                            .delete_owner(left_channel_id);
 
-                if let Some(mod_channel_id) = settings.mod_channel_id {
-                    let _ = mod_channel_id
-                        .say(
-                            &ctx.http,
-                            format!(
-                                "Deleted empty private temp voice <#{}>",
-                                left_channel_id.get()
-                            ),
-                        )
-                        .await;
+                        if let Some(mod_channel_id) = settings.mod_channel_id {
+                            let _ = mod_channel_id
+                                .say(
+                                    &ctx.http,
+                                    format!(
+                                        "Deleted empty {} temp voice <#{}>",
+                                        kind_label(entry.kind),
+                                        left_channel_id.get()
+                                    ),
+                                )
+                                .await;
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Failed to delete empty {} temp voice {}: {}",
+                            kind_label(entry.kind),
+                            left_channel_id,
+                            err
+                        );
+
+                        if let Some(mod_channel_id) = settings.mod_channel_id {
+                            let _ = mod_channel_id
+                                .say(
+                                    &ctx.http,
+                                    format!(
+                                        "Failed to delete empty {} temp voice <#{}>: {}",
+                                        kind_label(entry.kind),
+                                        left_channel_id.get(),
+                                        err
+                                    ),
+                                )
+                                .await;
+                        }
+                    }
                 }
             }
         }

@@ -40,6 +40,8 @@ impl SettingsRepository {
                 private_voice_allowed_channel_ids TEXT NOT NULL DEFAULT '',
                 temp_voice_category_id INTEGER,
                 temp_voice_lobby_channel_id INTEGER,
+                temp_voice_public_lobby_channel_id INTEGER,
+                temp_voice_private_lobby_channel_id INTEGER,
                 mod_channel_id INTEGER
             )",
         )
@@ -47,6 +49,14 @@ impl SettingsRepository {
         .await
         .context("Failed creating guild_settings table")?;
         sqlx::query("ALTER TABLE guild_settings ADD COLUMN temp_voice_lobby_channel_id INTEGER")
+            .execute(&self.pool)
+            .await
+            .ok();
+        sqlx::query("ALTER TABLE guild_settings ADD COLUMN temp_voice_public_lobby_channel_id INTEGER")
+            .execute(&self.pool)
+            .await
+            .ok();
+        sqlx::query("ALTER TABLE guild_settings ADD COLUMN temp_voice_private_lobby_channel_id INTEGER")
             .execute(&self.pool)
             .await
             .ok();
@@ -64,6 +74,8 @@ impl SettingsRepository {
                 private_voice_allowed_channel_ids,
                 temp_voice_category_id,
                 temp_voice_lobby_channel_id,
+                temp_voice_public_lobby_channel_id,
+                temp_voice_private_lobby_channel_id,
                 mod_channel_id
              FROM guild_settings
              WHERE guild_id = ?",
@@ -84,7 +96,10 @@ impl SettingsRepository {
         let music_raw: String = row.get("music_text_channel_ids");
         let private_voice_raw: String = row.get("private_voice_allowed_channel_ids");
         let temp_voice_category_id: Option<i64> = row.get("temp_voice_category_id");
-        let temp_voice_lobby_channel_id: Option<i64> = row.get("temp_voice_lobby_channel_id");
+        let legacy_temp_voice_lobby_channel_id: Option<i64> = row.get("temp_voice_lobby_channel_id");
+        let temp_voice_public_lobby_channel_id: Option<i64> = row.get("temp_voice_public_lobby_channel_id");
+        let temp_voice_private_lobby_channel_id: Option<i64> =
+            row.get("temp_voice_private_lobby_channel_id");
         let mod_channel_id: Option<i64> = row.get("mod_channel_id");
 
         Ok(GuildSettings {
@@ -94,7 +109,10 @@ impl SettingsRepository {
             music_text_channel_ids: GuildSettings::parse_channel_ids(&music_raw),
             private_voice_allowed_channel_ids: GuildSettings::parse_channel_ids(&private_voice_raw),
             temp_voice_category_id: temp_voice_category_id.map(|v| ChannelId::new(v as u64)),
-            temp_voice_lobby_channel_id: temp_voice_lobby_channel_id
+            temp_voice_public_lobby_channel_id: temp_voice_public_lobby_channel_id
+                .map(|v| ChannelId::new(v as u64)),
+            temp_voice_private_lobby_channel_id: temp_voice_private_lobby_channel_id
+                .or(legacy_temp_voice_lobby_channel_id)
                 .map(|v| ChannelId::new(v as u64)),
             mod_channel_id: mod_channel_id.map(|v| ChannelId::new(v as u64)),
         })
@@ -116,8 +134,10 @@ impl SettingsRepository {
                 private_voice_allowed_channel_ids,
                 temp_voice_category_id,
                 temp_voice_lobby_channel_id,
+                temp_voice_public_lobby_channel_id,
+                temp_voice_private_lobby_channel_id,
                 mod_channel_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id) DO UPDATE SET
                 admin_role_ids = excluded.admin_role_ids,
                 developer_role_ids = excluded.developer_role_ids,
@@ -125,6 +145,8 @@ impl SettingsRepository {
                 private_voice_allowed_channel_ids = excluded.private_voice_allowed_channel_ids,
                 temp_voice_category_id = excluded.temp_voice_category_id,
                 temp_voice_lobby_channel_id = excluded.temp_voice_lobby_channel_id,
+                temp_voice_public_lobby_channel_id = excluded.temp_voice_public_lobby_channel_id,
+                temp_voice_private_lobby_channel_id = excluded.temp_voice_private_lobby_channel_id,
                 mod_channel_id = excluded.mod_channel_id",
         )
         .bind(settings.guild_id.get() as i64)
@@ -139,7 +161,9 @@ impl SettingsRepository {
             &settings.private_voice_allowed_channel_ids,
         ))
         .bind(settings.temp_voice_category_id.map(|v| v.get() as i64))
-        .bind(settings.temp_voice_lobby_channel_id.map(|v| v.get() as i64))
+        .bind(settings.temp_voice_private_lobby_channel_id.map(|v| v.get() as i64))
+        .bind(settings.temp_voice_public_lobby_channel_id.map(|v| v.get() as i64))
+        .bind(settings.temp_voice_private_lobby_channel_id.map(|v| v.get() as i64))
         .bind(settings.mod_channel_id.map(|v| v.get() as i64))
         .execute(&self.pool)
         .await

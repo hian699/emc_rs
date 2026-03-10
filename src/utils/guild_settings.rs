@@ -10,7 +10,8 @@ pub struct GuildSettings {
     pub music_text_channel_ids: HashSet<ChannelId>,
     pub private_voice_allowed_channel_ids: HashSet<ChannelId>,
     pub temp_voice_category_id: Option<ChannelId>,
-    pub temp_voice_lobby_channel_id: Option<ChannelId>,
+    pub temp_voice_public_lobby_channel_id: Option<ChannelId>,
+    pub temp_voice_private_lobby_channel_id: Option<ChannelId>,
     pub mod_channel_id: Option<ChannelId>,
 }
 
@@ -23,7 +24,8 @@ impl GuildSettings {
             music_text_channel_ids: HashSet::new(),
             private_voice_allowed_channel_ids: HashSet::new(),
             temp_voice_category_id: None,
-            temp_voice_lobby_channel_id: None,
+            temp_voice_public_lobby_channel_id: None,
+            temp_voice_private_lobby_channel_id: None,
             mod_channel_id: None,
         }
     }

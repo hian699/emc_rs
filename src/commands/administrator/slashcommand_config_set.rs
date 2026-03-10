@@ -1,6 +1,6 @@
 use anyhow::Context as _;
 use serenity::all::{
-    CommandInteraction, CommandOptionType, CreateCommand, CreateCommandOption,
+    ChannelType, CommandInteraction, CommandOptionType, CreateCommand, CreateCommandOption,
     CreateInteractionResponse, CreateInteractionResponseMessage,
 };
 use serenity::client::Context;
@@ -9,6 +9,30 @@ use crate::commands::{get_channel_id_option, get_role_id_option, get_string_opti
 use crate::get_state;
 use crate::utils::access_control::ensure_admin_for_slash;
 use crate::utils::guild_settings::GuildSettings;
+
+async fn require_channel_kind(
+    ctx: &Context,
+    channel_id: serenity::all::ChannelId,
+    expected: ChannelType,
+    label: &str,
+) -> anyhow::Result<serenity::all::ChannelId> {
+    let channel = channel_id.to_channel(&ctx.http).await?;
+    let guild_channel = channel.guild().context("Not a guild channel")?;
+
+    if guild_channel.kind != expected {
+        anyhow::bail!(
+            "{label} must be a {} channel, got {:?}",
+            match expected {
+                ChannelType::Category => "category",
+                ChannelType::Voice => "voice",
+                _ => "supported",
+            },
+            guild_channel.kind
+        );
+    }
+
+    Ok(channel_id)
+}
 
 pub fn register() -> CreateCommand {
     CreateCommand::new("config-set")
@@ -20,6 +44,8 @@ pub fn register() -> CreateCommand {
                 .add_string_choice("music_channel_add", "music_channel_add")
                 .add_string_choice("private_voice_channel_add", "private_voice_channel_add")
                 .add_string_choice("temp_voice_category", "temp_voice_category")
+                .add_string_choice("temp_voice_public_lobby_channel", "temp_voice_public_lobby_channel")
+                .add_string_choice("temp_voice_private_lobby_channel", "temp_voice_private_lobby_channel")
                 .add_string_choice("temp_voice_lobby_channel", "temp_voice_lobby_channel")
                 .add_string_choice("mod_channel", "mod_channel")
                 .add_string_choice("admin_roles_csv", "admin_roles_csv")
@@ -79,12 +105,46 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
         "temp_voice_category" => {
             let channel_id =
                 get_channel_id_option(command, "channel").context("Missing channel option")?;
+            let channel_id =
+                require_channel_kind(ctx, channel_id, ChannelType::Category, "temp_voice_category")
+                    .await?;
             settings.temp_voice_category_id = Some(channel_id);
+        }
+        "temp_voice_public_lobby_channel" => {
+            let channel_id =
+                get_channel_id_option(command, "channel").context("Missing channel option")?;
+            let channel_id = require_channel_kind(
+                ctx,
+                channel_id,
+                ChannelType::Voice,
+                "temp_voice_public_lobby_channel",
+            )
+            .await?;
+            settings.temp_voice_public_lobby_channel_id = Some(channel_id);
+        }
+        "temp_voice_private_lobby_channel" => {
+            let channel_id =
+                get_channel_id_option(command, "channel").context("Missing channel option")?;
+            let channel_id = require_channel_kind(
+                ctx,
+                channel_id,
+                ChannelType::Voice,
+                "temp_voice_private_lobby_channel",
+            )
+            .await?;
+            settings.temp_voice_private_lobby_channel_id = Some(channel_id);
         }
         "temp_voice_lobby_channel" => {
             let channel_id =
                 get_channel_id_option(command, "channel").context("Missing channel option")?;
-            settings.temp_voice_lobby_channel_id = Some(channel_id);
+            let channel_id = require_channel_kind(
+                ctx,
+                channel_id,
+                ChannelType::Voice,
+                "temp_voice_lobby_channel",
+            )
+            .await?;
+            settings.temp_voice_private_lobby_channel_id = Some(channel_id);
         }
         "mod_channel" => {
             let channel_id =

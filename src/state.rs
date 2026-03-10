@@ -1,6 +1,8 @@
 use std::sync::Arc;
+#[cfg(feature = "lavalink")]
+use std::time::Instant;
 
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 #[cfg(feature = "lavalink")]
 use lavalink_rs::prelude::LavalinkClient;
@@ -17,4 +19,8 @@ pub struct BotState {
     pub private_voice_registry: Arc<RwLock<PrivateVoiceRegistry>>,
     #[cfg(feature = "lavalink")]
     pub lavalink_client: Arc<RwLock<Option<LavalinkClient>>>,
+    #[cfg(feature = "lavalink")]
+    pub lavalink_init_lock: Arc<Mutex<()>>,
+    #[cfg(feature = "lavalink")]
+    pub lavalink_retry_after: Arc<RwLock<Option<Instant>>>,
 }
