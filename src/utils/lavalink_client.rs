@@ -173,7 +173,13 @@ fn read_lavalink_password_from_env() -> anyhow::Result<String> {
 
 #[cfg(feature = "lavalink")]
 async fn validate_lavalink_host(host: &str) -> anyhow::Result<()> {
-    let mut addresses = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host(host))
+    // lookup_host requires "host:port" format; append :80 if no port is present
+    let lookup_addr = if host.contains(':') {
+        host.to_string()
+    } else {
+        format!("{host}:80")
+    };
+    let mut addresses = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host(lookup_addr.as_str()))
         .await
         .with_context(|| format!("Timed out while resolving Lavalink host '{host}'"))?
         .with_context(|| {

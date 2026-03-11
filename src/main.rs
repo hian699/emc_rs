@@ -25,6 +25,8 @@ use crate::state::BotState;
 #[cfg(feature = "lavalink")]
 use crate::utils::lavalink_client::set_lavalink_runtime_context;
 use crate::utils::lavalink_client::{create_client, lavalink_enabled_from_env};
+#[cfg(feature = "lavalink")]
+use songbird::SerenityInit;
 use crate::utils::music_manager::MusicManager;
 use crate::utils::private_voice_registry::PrivateVoiceRegistry;
 use crate::utils::search_cache::SearchCache;
@@ -378,8 +380,10 @@ async fn main() -> anyhow::Result<()> {
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::GUILD_VOICE_STATES;
 
-    let mut client = Client::builder(token, intents)
-        .event_handler(Handler)
+    let client_builder = Client::builder(token, intents).event_handler(Handler);
+    #[cfg(feature = "lavalink")]
+    let client_builder = client_builder.register_songbird();
+    let mut client = client_builder
         .await
         .context("Failed to create Discord client")?;
 

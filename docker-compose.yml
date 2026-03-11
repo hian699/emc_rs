@@ -9,6 +9,7 @@ services:
       SQLITE_DATABASE_URL: sqlite:///data/bot_config.db
       LAVALINK_HOST: "${LAVALINK_HOST:-lavalink:2333}"
       LAVALINK_PASSWORD: "${LAVALINK_SERVER_PASSWORD:-youshallnotpass}"
+      RUST_LOG: "${RUST_LOG:-emc_rs=debug,warn}"
     volumes:
       - bot_data:/data
     depends_on:

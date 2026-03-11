@@ -2,11 +2,10 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
-use tracing::{debug, warn};
+use tracing::debug;
 use serenity::all::{ChannelId, GuildId};
 use serenity::client::Context;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 
 use crate::get_lavalink_client;
 use crate::get_state;
@@ -32,6 +31,9 @@ pub struct MusicQueue {
     is_playing: bool,
     disconnect_timeout: Option<JoinHandle<()>>,
     auto_leave_suppressed_until: Option<Instant>,
+    /// Set to true after a Lavalink voice player is successfully created.
+    /// Used to skip redundant voice handshakes on subsequent connect() calls.
+    pub lavalink_player_initialized: bool,
 }
 
 impl MusicQueue {
@@ -44,6 +46,7 @@ impl MusicQueue {
             is_playing: false,
             disconnect_timeout: None,
             auto_leave_suppressed_until: None,
+            lavalink_player_initialized: false,
         }
     }
 
@@ -55,10 +58,10 @@ impl MusicQueue {
                 .await
                 .context("Failed to resolve channel")?;
             let guild_channel = channel.guild().context("Target is not a guild channel")?;
-            let bot_user_id = _ctx.cache.current_user().id;
+            let guild_id = guild_channel.guild_id;
             let state = get_state(_ctx).await?;
 
-            if let Some(queue) = state.music_manager.get_queue(guild_channel.guild_id).await {
+            if let Some(queue) = state.music_manager.get_queue(guild_id).await {
                 queue
                     .write()
                     .await
@@ -71,153 +74,111 @@ impl MusicQueue {
                 anyhow::bail!("Target channel is not a voice or stage channel")
             }
 
-            let current_bot_channel_id = guild_channel
-                .guild_id
+            // If already in the correct channel with an active Lavalink player, skip re-handshake.
+            let bot_user_id = _ctx.cache.current_user().id;
+            let already_in_channel = guild_id
                 .to_guild_cached(&_ctx.cache)
-                .and_then(|guild| {
-                    guild
-                        .voice_states
-                        .get(&bot_user_id)
-                        .and_then(|state| state.channel_id)
-                });
+                .and_then(|g| g.voice_states.get(&bot_user_id).and_then(|vs| vs.channel_id))
+                == Some(_channel_id);
 
-            // Start listening for voice connection info BEFORE sending OP4,
-            // so the listener is registered when Discord fires the voice events.
-            let lavalink_client = get_lavalink_client(_ctx).await?;
-            let guild_id = guild_channel.guild_id;
-            let connection_info_fut = if let Some(ref client) = lavalink_client {
-                let client = client.clone();
-                debug!("[Lavalink] registering get_connection_info listener for guild {:?}", guild_id);
-                Some(tokio::spawn(async move {
-                    client
-                        .get_connection_info(guild_id, Duration::from_secs(10))
-                        .await
-                }))
-            } else {
-                warn!("[Lavalink] no lavalink client available during connect() for guild {:?}", guild_id);
-                None
+            if already_in_channel {
+                let player_ready = if let Some(q) = state.music_manager.get_queue(guild_id).await {
+                    q.read().await.lavalink_player_initialized
+                } else {
+                    false
+                };
+                if player_ready {
+                    debug!(
+                        "[Lavalink] player already initialized for guild {:?}, skipping",
+                        guild_id
+                    );
+                    return Ok(());
+                }
+            }
+
+            // songbird.join() sends OP4 internally and waits for BOTH VOICE_STATE_UPDATE
+            // and VOICE_SERVER_UPDATE to complete before returning — guaranteeing a fresh,
+            // non-stale token/endpoint with no race condition.
+            let manager = songbird::get(_ctx)
+                .await
+                .ok_or_else(|| anyhow::anyhow!("Songbird is not registered in the serenity client"))?;
+
+            let (call, join_result) = manager.join(guild_id, _channel_id).await;
+            join_result.context("Songbird failed to join voice channel")?;
+
+            // Fresh voice connection info — guaranteed valid after successful join().
+            let conn_info = {
+                let call_lock = call.lock().await;
+                call_lock.current_connection().cloned()
             };
-            if current_bot_channel_id != Some(_channel_id) {
-                let payload = serde_json::json!({
-                    "op": 4,
-                    "d": {
-                        "guild_id": guild_channel.guild_id.get().to_string(),
-                        "channel_id": _channel_id.get().to_string(),
-                        "self_mute": false,
-                        "self_deaf": false
-                    }
-                });
+            let conn_info =
+                conn_info.ok_or_else(|| anyhow::anyhow!("Songbird has no connection info after join"))?;
 
-                _ctx.shard
-                    .websocket_message(WebSocketMessage::Text(payload.to_string().into()));
+            debug!(
+                "[Lavalink] songbird joined: guild={:?} endpoint={:?} session={:?} token_len={}",
+                guild_id, conn_info.endpoint, conn_info.session_id, conn_info.token.len()
+            );
 
-                tokio::time::timeout(Duration::from_secs(5), async {
+            let lavalink_client = get_lavalink_client(_ctx).await?;
+            let Some(client) = lavalink_client else {
+                return Ok(());
+            };
+
+            // Wait for Lavalink WS Ready event so session_id is populated.
+            if let Some(node) = client.nodes.first() {
+                tokio::time::timeout(Duration::from_secs(8), async {
                     loop {
-                        let bot_channel_id = guild_channel
-                            .guild_id
-                            .to_guild_cached(&_ctx.cache)
-                            .and_then(|guild| {
-                                guild
-                                    .voice_states
-                                    .get(&bot_user_id)
-                                    .and_then(|state| state.channel_id)
-                            });
-
-                        if bot_channel_id == Some(_channel_id) {
+                        let sid = node.session_id.load();
+                        if sid.parse::<usize>().is_err() {
                             break;
                         }
-
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                 })
                 .await
-                .with_context(|| {
-                    format!(
-                        "Timed out while waiting for bot voice state update into channel {} after sending gateway VOICE_STATE_UPDATE",
-                        _channel_id.get()
-                    )
-                })?;
+                .with_context(|| "Timed out waiting for Lavalink node Ready event")?;
             }
 
-            // Now collect the connection info and create the Lavalink player.
-            // By this point the voice events have been sent by Discord and should
-            // have been received by the lavalink-rs internal handler.
-            if let (Some(client), Some(fut)) = (lavalink_client, connection_info_fut) {
-                // Wait for the Lavalink node's session_id to be set from the WS Ready event.
-                // The default placeholder is the node index as a string (e.g. "0").
-                // If we call create_player before Ready is received, the REST URL will be
-                // /v4/sessions/0/players/{guild} which Lavalink rejects with a non-JSON body,
-                // causing the untagged-enum deserialization failure.
-                if let Some(node) = client.nodes.first() {
-                    tokio::time::timeout(Duration::from_secs(8), async {
-                        loop {
-                            let sid = node.session_id.load();
-                            // The placeholder is a small integer string ("0", "1", ...); a real
-                            // Lavalink session ID is a UUID-like hex string, never a bare integer.
-                            if sid.parse::<usize>().is_err() {
-                                break;
-                            }
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                        }
-                    })
-                    .await
-                    .with_context(|| "Timed out waiting for Lavalink node Ready event (session_id never became a real UUID). Check that the Lavalink server is running and reachable.")?;
-
-                    tracing::debug!(
-                        "[Lavalink] node session_id is ready: {:?}",
-                        client.nodes.first().map(|n| n.session_id.load().to_string())
-                    );
+            // PATCH Lavalink player with fresh voice data from songbird.
+            let node = client
+                .nodes
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("No Lavalink nodes available"))?;
+            let session_id_str = node.session_id.load().to_string();
+            // Lavalink expects endpoint without protocol prefix.
+            let endpoint = conn_info.endpoint.replace("wss://", "");
+            let patch_body = serde_json::json!({
+                "voice": {
+                    "token": &conn_info.token,
+                    "endpoint": &endpoint,
+                    "sessionId": &conn_info.session_id,
                 }
-                let connection_info = fut
-                    .await
-                    .context("get_connection_info task panicked")?
-                    .context("Timed out waiting for Discord voice events (VOICE_SERVER_UPDATE / VOICE_STATE_UPDATE). Make sure both events are forwarded to lavalink-rs.")?;
-
-                tracing::debug!(
-                    "[Lavalink] create_player for guild {:?} — token_len={} endpoint={:?}",
-                    guild_id,
-                    connection_info.token.len(),
-                    connection_info.endpoint,
-                );
-
-                // lavalink-rs 0.15.0 has a deserialization bug: the PATCH /v4/sessions/.../players/...
-                // response from Lavalink omits `voice.channelId`, but ConnectionInfo's
-                // channel_id field uses a custom deserializer without #[serde(default)],
-                // causing "data did not match any variant of untagged enum RequestResult".
-                // Workaround: make the PATCH call ourselves via node.http.raw_request,
-                // which returns the raw string body without deserializing, then ignore it.
-                // update_player / delete_player on client still work because they call
-                // get_node_for_guild() directly, not via the players map.
-                let node = client.nodes.first()
-                    .ok_or_else(|| anyhow::anyhow!("No Lavalink nodes available"))?;
-                let session_id_str = node.session_id.load().to_string();
-                let mut voice_endpoint = connection_info.endpoint.clone();
-                voice_endpoint = voice_endpoint.replace("wss://", ""); // matches ConnectionInfo::fix()
-                let patch_body = serde_json::json!({
-                    "voice": {
-                        "token": &connection_info.token,
-                        "endpoint": &voice_endpoint,
-                        "sessionId": &connection_info.session_id,
-                    }
-                });
-                let uri = node.http.path_to_uri(
-                    &format!(
-                        "/sessions/{}/players/{}?noReplace=true",
-                        session_id_str,
-                        guild_id.get()
-                    ),
+            });
+            debug!(
+                "[Lavalink] PATCH /sessions/{}/players/{} body={}",
+                session_id_str,
+                guild_id.get(),
+                serde_json::to_string(&patch_body).unwrap_or_default()
+            );
+            let uri = node
+                .http
+                .path_to_uri(
+                    &format!("/sessions/{}/players/{}", session_id_str, guild_id.get()),
                     true,
                 )
-                .map_err(|e| anyhow::anyhow!("Failed to build Lavalink player URI: {e}"))?;
-                node.http
-                    .raw_request(
-                        ::http::Method::PATCH,
-                        uri,
-                        Some(&patch_body),
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to create Lavalink voice player: {e}"))?;
-                debug!("[Lavalink] player created successfully for guild {:?}", guild_id);
+                .map_err(|e| anyhow::anyhow!("Failed to build Lavalink URI: {e}"))?;
+            let response = node
+                .http
+                .raw_request(::http::Method::PATCH, uri, Some(&patch_body))
+                .await
+                .map_err(|e| anyhow::anyhow!("Lavalink PATCH failed: {e}"))?;
+            debug!("[Lavalink] PATCH response: guild={:?} body={}", guild_id, &response);
+            if response.contains("\"error\"") {
+                anyhow::bail!("Lavalink rejected voice player creation: {}", response);
+            }
+
+            if let Some(q) = state.music_manager.get_queue(guild_id).await {
+                q.write().await.lavalink_player_initialized = true;
             }
         }
 
@@ -233,18 +194,11 @@ impl MusicQueue {
                 .context("Failed to delete lavalink player")?;
         }
 
-        let payload = serde_json::json!({
-            "op": 4,
-            "d": {
-                "guild_id": guild_id.get().to_string(),
-                "channel_id": null,
-                "self_mute": false,
-                "self_deaf": false
-            }
-        });
-
-        ctx.shard
-            .websocket_message(WebSocketMessage::Text(payload.to_string().into()));
+        // songbird.remove() sends OP4 channel_id=null and clears its internal state.
+        #[cfg(feature = "lavalink")]
+        if let Some(manager) = songbird::get(ctx).await {
+            let _ = manager.remove(guild_id).await;
+        }
 
         Ok(())
     }
@@ -384,10 +338,14 @@ impl MusicQueue {
             "track": { "encoded": encoded_clone },
             "paused": false
         });
-        node.http
+        let response = node.http
             .raw_request(::http::Method::PATCH, uri, Some(&patch_body))
             .await
             .map_err(|e| anyhow::anyhow!("Failed to update Lavalink player for current song: {e}"))?;
+        debug!("[Lavalink] play_song_now response for guild {:?}: {}", guild_id, &response);
+        if response.contains("\"error\"") {
+            anyhow::bail!("Lavalink rejected track playback: {}", response);
+        }
         Ok(())
     }
 
@@ -430,6 +388,7 @@ impl MusicQueue {
         self.current = None;
         self.is_playing = false;
         self.auto_leave_suppressed_until = None;
+        self.lavalink_player_initialized = false;
         Self::disconnect_from_voice(ctx, self.guild_id).await
     }
 
