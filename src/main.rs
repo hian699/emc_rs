@@ -139,10 +139,24 @@ impl EventHandler for Handler {
 
     async fn voice_server_update(&self, ctx: Context, event: VoiceServerUpdateEvent) {
         #[cfg(feature = "lavalink")]
-        if let (Some(guild_id), Ok(Some(client))) =
-            (event.guild_id, get_lavalink_client(&ctx).await)
         {
-            client.handle_voice_server_update(guild_id, event.token, event.endpoint);
+            let guild_id = event.guild_id;
+            tracing::debug!(
+                "[Lavalink] voice_server_update: guild={:?} endpoint={:?}",
+                guild_id,
+                event.endpoint
+            );
+            if let (Some(guild_id), Ok(Some(client))) =
+                (guild_id, get_lavalink_client(&ctx).await)
+            {
+                client.handle_voice_server_update(guild_id, event.token, event.endpoint);
+                tracing::debug!("[Lavalink] forwarded voice_server_update for guild {:?}", guild_id);
+            } else {
+                tracing::warn!(
+                    "[Lavalink] voice_server_update NOT forwarded: guild={:?} (client missing or no guild_id)",
+                    guild_id
+                );
+            }
         }
     }
 
@@ -154,14 +168,32 @@ impl EventHandler for Handler {
         }
 
         #[cfg(feature = "lavalink")]
-        if let (Some(guild_id), Ok(Some(client))) = (new.guild_id, get_lavalink_client(&ctx).await)
         {
-            client.handle_voice_state_update(
-                guild_id,
-                new.channel_id,
-                new.user_id,
-                new.session_id.clone(),
+            let guild_id = new.guild_id;
+            let user_id = new.user_id;
+            let channel_id = new.channel_id;
+            tracing::debug!(
+                "[Lavalink] voice_state_update: guild={:?} user={:?} channel={:?}",
+                guild_id, user_id, channel_id
             );
+            if let (Some(guild_id), Ok(Some(client))) = (guild_id, get_lavalink_client(&ctx).await)
+            {
+                client.handle_voice_state_update(
+                    guild_id,
+                    channel_id,
+                    user_id,
+                    new.session_id.clone(),
+                );
+                tracing::debug!(
+                    "[Lavalink] forwarded voice_state_update for guild {:?} user {:?}",
+                    guild_id, user_id
+                );
+            } else {
+                tracing::warn!(
+                    "[Lavalink] voice_state_update NOT forwarded: guild={:?} user={:?} (client missing or no guild_id)",
+                    guild_id, user_id
+                );
+            }
         }
 
         if let Err(err) = events::voice_state_update::on_music_auto_leave::run(&ctx, &new).await {

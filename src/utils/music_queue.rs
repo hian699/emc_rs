@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use tracing::{debug, warn};
 #[cfg(feature = "lavalink")]
 use lavalink_rs::model::http::{UpdatePlayer, UpdatePlayerTrack};
 #[cfg(feature = "lavalink")]
@@ -90,15 +91,16 @@ impl MusicQueue {
             let guild_id = guild_channel.guild_id;
             let connection_info_fut = if let Some(ref client) = lavalink_client {
                 let client = client.clone();
+                debug!("[Lavalink] registering get_connection_info listener for guild {:?}", guild_id);
                 Some(tokio::spawn(async move {
                     client
                         .get_connection_info(guild_id, Duration::from_secs(10))
                         .await
                 }))
             } else {
+                warn!("[Lavalink] no lavalink client available during connect() for guild {:?}", guild_id);
                 None
             };
-
             if current_bot_channel_id != Some(_channel_id) {
                 let payload = serde_json::json!({
                     "op": 4,
