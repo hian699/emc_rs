@@ -44,8 +44,14 @@ pub fn register() -> CreateCommand {
                 .add_string_choice("music_channel_add", "music_channel_add")
                 .add_string_choice("private_voice_channel_add", "private_voice_channel_add")
                 .add_string_choice("temp_voice_category", "temp_voice_category")
-                .add_string_choice("temp_voice_public_lobby_channel", "temp_voice_public_lobby_channel")
-                .add_string_choice("temp_voice_private_lobby_channel", "temp_voice_private_lobby_channel")
+                .add_string_choice(
+                    "temp_voice_public_lobby_channel",
+                    "temp_voice_public_lobby_channel",
+                )
+                .add_string_choice(
+                    "temp_voice_private_lobby_channel",
+                    "temp_voice_private_lobby_channel",
+                )
                 .add_string_choice("temp_voice_lobby_channel", "temp_voice_lobby_channel")
                 .add_string_choice("mod_channel", "mod_channel")
                 .add_string_choice("admin_roles_csv", "admin_roles_csv")
@@ -105,9 +111,13 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
         "temp_voice_category" => {
             let channel_id =
                 get_channel_id_option(command, "channel").context("Missing channel option")?;
-            let channel_id =
-                require_channel_kind(ctx, channel_id, ChannelType::Category, "temp_voice_category")
-                    .await?;
+            let channel_id = require_channel_kind(
+                ctx,
+                channel_id,
+                ChannelType::Category,
+                "temp_voice_category",
+            )
+            .await?;
             settings.temp_voice_category_id = Some(channel_id);
         }
         "temp_voice_public_lobby_channel" => {

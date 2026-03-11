@@ -1,12 +1,92 @@
+#[cfg(feature = "lavalink")]
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::Context as _;
 
 #[cfg(feature = "lavalink")]
-use lavalink_rs::prelude::{LavalinkClient, NodeBuilder, NodeDistributionStrategy, UserId};
+use lavalink_rs::model::BoxFuture;
 #[cfg(feature = "lavalink")]
-use lavalink_rs::{model::events::Events, model::track::TrackLoadData};
+use lavalink_rs::model::events::{Events, TrackEnd, TrackStart};
+#[cfg(feature = "lavalink")]
+use lavalink_rs::model::track::TrackLoadData;
+#[cfg(feature = "lavalink")]
+use lavalink_rs::prelude::{LavalinkClient, NodeBuilder, NodeDistributionStrategy, UserId};
 use serenity::all::GuildId;
+#[cfg(feature = "lavalink")]
+use serenity::client::Context as SerenityContext;
+
+#[cfg(feature = "lavalink")]
+use crate::get_state;
+
+#[cfg(feature = "lavalink")]
+static LAVALINK_RUNTIME_CONTEXT: OnceLock<SerenityContext> = OnceLock::new();
+
+#[cfg(feature = "lavalink")]
+pub fn set_lavalink_runtime_context(ctx: &SerenityContext) {
+    let _ = LAVALINK_RUNTIME_CONTEXT.set(ctx.clone());
+}
+
+#[cfg(feature = "lavalink")]
+fn lavalink_runtime_context() -> Option<SerenityContext> {
+    LAVALINK_RUNTIME_CONTEXT.get().cloned()
+}
+
+#[cfg(feature = "lavalink")]
+fn handle_track_start(
+    _client: LavalinkClient,
+    _session_id: String,
+    event: &TrackStart,
+) -> BoxFuture<'_, ()> {
+    let event = event.clone();
+    Box::pin(async move {
+        let Some(ctx) = lavalink_runtime_context() else {
+            return;
+        };
+        let Ok(state) = get_state(&ctx).await else {
+            return;
+        };
+        let Some(queue) = state
+            .music_manager
+            .get_queue(GuildId::new(event.guild_id.0))
+            .await
+        else {
+            return;
+        };
+
+        queue.write().await.clear_disconnect_timeout();
+    })
+}
+
+#[cfg(feature = "lavalink")]
+fn handle_track_end(
+    _client: LavalinkClient,
+    _session_id: String,
+    event: &TrackEnd,
+) -> BoxFuture<'_, ()> {
+    let event = event.clone();
+    Box::pin(async move {
+        if !bool::from(event.reason.clone()) {
+            return;
+        }
+
+        let Some(ctx) = lavalink_runtime_context() else {
+            return;
+        };
+        let Ok(state) = get_state(&ctx).await else {
+            return;
+        };
+        let Some(queue) = state
+            .music_manager
+            .get_queue(GuildId::new(event.guild_id.0))
+            .await
+        else {
+            return;
+        };
+
+        let _ = queue.write().await.handle_song_end(&ctx).await;
+    })
+}
 
 pub fn lavalink_enabled_from_env() -> bool {
     read_non_empty_env("LAVALINK_HOST").is_ok() && read_lavalink_password_from_env().is_ok()
@@ -104,13 +184,25 @@ pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result
         is_ssl,
         password,
         user_id: UserId::from(bot_user_id),
-        events: Events::default(),
+        events: Events {
+            track_start: Some(handle_track_start),
+            track_end: Some(handle_track_end),
+            ..Default::default()
+        },
         session_id: None,
     };
 
     tokio::time::timeout(
         Duration::from_secs(10),
-        LavalinkClient::new(Events::default(), vec![node], NodeDistributionStrategy::new()),
+        LavalinkClient::new(
+            Events {
+                track_start: Some(handle_track_start),
+                track_end: Some(handle_track_end),
+                ..Default::default()
+            },
+            vec![node],
+            NodeDistributionStrategy::new(),
+        ),
     )
     .await
     .context("Timed out while connecting to Lavalink")
@@ -138,14 +230,24 @@ pub async fn search_tracks(
         format!("ytsearch:{query}")
     };
 
-    let loaded = match tokio::time::timeout(Duration::from_secs(12), client.load_tracks(guild_id, &identifier)).await {
+    let loaded = match tokio::time::timeout(
+        Duration::from_secs(12),
+        client.load_tracks(guild_id, &identifier),
+    )
+    .await
+    {
         Ok(Ok(value)) => value,
         _ => {
             tokio::time::sleep(Duration::from_millis(600)).await;
-            tokio::time::timeout(Duration::from_secs(12), client.load_tracks(guild_id, &identifier))
-                .await
-                .context("Timed out while loading tracks from Lavalink")?
-                .with_context(|| format!("Failed to load tracks from lavalink for identifier: {identifier}"))?
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                client.load_tracks(guild_id, &identifier),
+            )
+            .await
+            .context("Timed out while loading tracks from Lavalink")?
+            .with_context(|| {
+                format!("Failed to load tracks from lavalink for identifier: {identifier}")
+            })?
         }
     };
 
@@ -192,9 +294,12 @@ pub async fn try_create_player_context(
         .get_connection_info(guild_id, Duration::from_secs(8))
         .await
         .context("Missing voice connection info from Discord events")?;
-    let player = tokio::time::timeout(Duration::from_secs(8), client.create_player_context(guild_id, info))
-        .await
-        .context("Timed out while creating lavalink player context")?
-        .context("Failed to create lavalink player context")?;
+    let player = tokio::time::timeout(
+        Duration::from_secs(8),
+        client.create_player_context(guild_id, info),
+    )
+    .await
+    .context("Timed out while creating lavalink player context")?
+    .context("Failed to create lavalink player context")?;
     Ok(player)
 }

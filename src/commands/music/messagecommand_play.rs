@@ -52,9 +52,7 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
                     &ctx.http,
                     CreateMessage::new().embed(warning_embed(
                         "Voice Connect Failed",
-                        format!(
-                            "Cannot connect to your voice channel. Check bot Connect/Speak permissions.\nDetails: {err}"
-                        ),
+                        format!("Cannot connect the bot to your voice channel.\nDetails: {err}"),
                     )),
                 )
                 .await?;
@@ -181,9 +179,7 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
                 &ctx.http,
                 CreateMessage::new().embed(warning_embed(
                     "Voice Connect Failed",
-                    format!(
-                        "Cannot connect to your voice channel. Check bot Connect/Speak permissions.\nDetails: {err}"
-                    ),
+                    format!("Cannot connect the bot to your voice channel.\nDetails: {err}"),
                 )),
             )
             .await?;
@@ -212,7 +208,10 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
         .send_message(
             &ctx.http,
             CreateMessage::new()
-                .embed(info_embed("Search Results", "Select one song from the menu below."))
+                .embed(info_embed(
+                    "Search Results",
+                    "Select one song from the menu below.",
+                ))
                 .components(vec![CreateActionRow::SelectMenu(select)]),
         )
         .await?;

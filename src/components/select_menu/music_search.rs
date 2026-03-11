@@ -68,7 +68,11 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
             CreateInteractionResponse::UpdateMessage(
                 CreateInteractionResponseMessage::new().embed(success_embed(
                     "Song Added",
-                    format!("**{}** ({})", picked.title, format_duration(picked.duration_ms)),
+                    format!(
+                        "**{}** ({})",
+                        picked.title,
+                        format_duration(picked.duration_ms)
+                    ),
                 )),
             ),
         )

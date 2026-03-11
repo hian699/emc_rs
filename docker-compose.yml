@@ -57,7 +57,9 @@ services:
              done;
              exec java -jar /opt/Lavalink/Lavalink.jar'
     networks:
-      - dokploy-network
+      dokploy-network:
+        aliases:
+          - lavalink
 
 volumes:
   bot_data:

@@ -22,6 +22,8 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::state::BotState;
+#[cfg(feature = "lavalink")]
+use crate::utils::lavalink_client::set_lavalink_runtime_context;
 use crate::utils::lavalink_client::{create_client, lavalink_enabled_from_env};
 use crate::utils::music_manager::MusicManager;
 use crate::utils::private_voice_registry::PrivateVoiceRegistry;
@@ -74,6 +76,9 @@ impl TypeMapKey for BotStateKey {
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!("Connected as {}", ready.user.tag());
+
+        #[cfg(feature = "lavalink")]
+        set_lavalink_runtime_context(&ctx);
 
         let lavalink_ctx = ctx.clone();
         let bot_user_id = ready.user.id;

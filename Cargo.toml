@@ -29,5 +29,6 @@ serenity = { version = "0.12", default-features = false, features = [
 ] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite"], optional = true }
 tokio = { version = "1.36", features = ["macros", "rt-multi-thread", "process", "time", "sync"] }
+tokio-tungstenite = { version = "0.21", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

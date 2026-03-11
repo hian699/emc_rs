@@ -33,8 +33,13 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
         .get_entry(voice_channel_id)
         .context("This voice channel is not a private temp voice")?;
 
-    if !matches!(owner.kind, crate::utils::private_voice_registry::TempVoiceChannelKind::Private) {
-        return Err(anyhow::anyhow!("This temp voice channel is public, not private"));
+    if !matches!(
+        owner.kind,
+        crate::utils::private_voice_registry::TempVoiceChannelKind::Private
+    ) {
+        return Err(anyhow::anyhow!(
+            "This temp voice channel is public, not private"
+        ));
     }
 
     let settings = state.settings_repo.get_settings(guild_id).await?;

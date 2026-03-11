@@ -52,6 +52,15 @@ pub async fn run(
         .or_else(|| old_state.and_then(|s| s.guild_id))
         .context("Missing guild id in voice state event")?;
 
+    if new_state.user_id == ctx.cache.current_user().id
+        || new_state
+            .member
+            .as_ref()
+            .is_some_and(|member| member.user.bot)
+    {
+        return Ok(());
+    }
+
     let old_channel_id = old_state.and_then(|s| s.channel_id);
     let new_channel_id = new_state.channel_id;
 
@@ -96,16 +105,36 @@ pub async fn run(
             }
 
             let created_channel = guild_id
-                .create_channel(
-                    &ctx.http,
-                    builder,
-                )
+                .create_channel(&ctx.http, builder)
                 .await
                 .with_context(|| {
                     format!("Failed to create {} temp voice channel", kind_label(kind))
                 })?;
 
-            if let Err(err) = guild_id.move_member(&ctx.http, new_state.user_id, created_channel.id).await {
+            let latest_channel_id = guild_id.to_guild_cached(&ctx.cache).and_then(|guild| {
+                guild
+                    .voice_states
+                    .get(&new_state.user_id)
+                    .and_then(|voice_state| voice_state.channel_id)
+            });
+
+            if latest_channel_id != new_channel_id {
+                if let Err(delete_err) = created_channel.delete(&ctx.http).await {
+                    warn!(
+                        "Failed to clean up {} temp voice {} after stale voice state: {}",
+                        kind_label(kind),
+                        created_channel.id,
+                        delete_err
+                    );
+                }
+
+                return Ok(());
+            }
+
+            if let Err(err) = guild_id
+                .move_member(&ctx.http, new_state.user_id, created_channel.id)
+                .await
+            {
                 if let Err(delete_err) = created_channel.delete(&ctx.http).await {
                     warn!(
                         "Failed to clean up {} temp voice {} after move failure: {}",
@@ -116,15 +145,18 @@ pub async fn run(
                 }
 
                 return Err(err).with_context(|| {
-                    format!("Failed to move user to {} temp voice channel", kind_label(kind))
+                    format!(
+                        "Failed to move user to {} temp voice channel",
+                        kind_label(kind)
+                    )
                 });
             }
 
-            state
-                .private_voice_registry
-                .write()
-                .await
-                .set_channel(created_channel.id, new_state.user_id, kind);
+            state.private_voice_registry.write().await.set_channel(
+                created_channel.id,
+                new_state.user_id,
+                kind,
+            );
 
             if let Some(mod_channel_id) = settings.mod_channel_id {
                 let _ = mod_channel_id

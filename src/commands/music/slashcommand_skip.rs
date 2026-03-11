@@ -16,7 +16,7 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
     let state = get_state(ctx).await?;
 
     if let Some(queue) = state.music_manager.get_queue(guild_id).await {
-        queue.write().await.skip().await?;
+        queue.write().await.skip(ctx).await?;
     }
 
     command

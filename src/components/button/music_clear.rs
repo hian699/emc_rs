@@ -12,14 +12,15 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
     let state = get_state(ctx).await?;
 
     if let Some(queue) = state.music_manager.get_queue(guild_id).await {
-        queue.write().await.stop().await?;
+        queue.write().await.stop(ctx).await?;
     }
 
     interaction
         .create_response(
             &ctx.http,
             CreateInteractionResponse::UpdateMessage(
-                CreateInteractionResponseMessage::new().embed(info_embed("Queue Cleared", "Queue cleared")),
+                CreateInteractionResponseMessage::new()
+                    .embed(info_embed("Queue Cleared", "Queue cleared")),
             ),
         )
         .await?;

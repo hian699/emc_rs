@@ -63,7 +63,7 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
                         CreateInteractionResponseMessage::new().embed(warning_embed(
                             "Voice Connect Failed",
                             format!(
-                                "Cannot connect to your voice channel. Check bot Connect/Speak permissions.\nDetails: {err}"
+                                "Cannot connect the bot to your voice channel.\nDetails: {err}"
                             ),
                         )),
                     ),
@@ -116,12 +116,12 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
         command
             .create_response(
                 &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new().embed(success_embed(
+                CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().embed(
+                    success_embed(
                         "Song Added",
                         format!("**{}** ({})", item.title, format_duration(item.duration_ms)),
-                    )),
-                ),
+                    ),
+                )),
             )
             .await?;
 
@@ -192,14 +192,12 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
         command
             .create_response(
                 &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new().embed(warning_embed(
+                CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().embed(
+                    warning_embed(
                         "Voice Connect Failed",
-                        format!(
-                            "Cannot connect to your voice channel. Check bot Connect/Speak permissions.\nDetails: {err}"
-                        ),
-                    )),
-                ),
+                        format!("Cannot connect the bot to your voice channel.\nDetails: {err}"),
+                    ),
+                )),
             )
             .await?;
         return Ok(());
@@ -227,7 +225,10 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
             &ctx.http,
             CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
-                    .embed(info_embed("Search Results", "Select one song from the menu below."))
+                    .embed(info_embed(
+                        "Search Results",
+                        "Select one song from the menu below.",
+                    ))
                     .components(vec![CreateActionRow::SelectMenu(select)]),
             ),
         )

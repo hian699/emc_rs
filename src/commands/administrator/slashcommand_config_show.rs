@@ -84,10 +84,19 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
             format_role_list(&settings.admin_role_ids, guild.as_deref()),
             format_role_list(&settings.developer_role_ids, guild.as_deref()),
             format_channel_list(&settings.music_text_channel_ids, guild.as_deref()),
-            format_channel_list(&settings.private_voice_allowed_channel_ids, guild.as_deref()),
+            format_channel_list(
+                &settings.private_voice_allowed_channel_ids,
+                guild.as_deref()
+            ),
             format_optional_channel(settings.temp_voice_category_id, guild.as_deref()),
-            format_optional_channel(settings.temp_voice_public_lobby_channel_id, guild.as_deref()),
-            format_optional_channel(settings.temp_voice_private_lobby_channel_id, guild.as_deref()),
+            format_optional_channel(
+                settings.temp_voice_public_lobby_channel_id,
+                guild.as_deref()
+            ),
+            format_optional_channel(
+                settings.temp_voice_private_lobby_channel_id,
+                guild.as_deref()
+            ),
             format_optional_channel(settings.mod_channel_id, guild.as_deref())
         )
     };

@@ -52,14 +52,18 @@ impl SettingsRepository {
             .execute(&self.pool)
             .await
             .ok();
-        sqlx::query("ALTER TABLE guild_settings ADD COLUMN temp_voice_public_lobby_channel_id INTEGER")
-            .execute(&self.pool)
-            .await
-            .ok();
-        sqlx::query("ALTER TABLE guild_settings ADD COLUMN temp_voice_private_lobby_channel_id INTEGER")
-            .execute(&self.pool)
-            .await
-            .ok();
+        sqlx::query(
+            "ALTER TABLE guild_settings ADD COLUMN temp_voice_public_lobby_channel_id INTEGER",
+        )
+        .execute(&self.pool)
+        .await
+        .ok();
+        sqlx::query(
+            "ALTER TABLE guild_settings ADD COLUMN temp_voice_private_lobby_channel_id INTEGER",
+        )
+        .execute(&self.pool)
+        .await
+        .ok();
 
         Ok(())
     }
@@ -96,8 +100,10 @@ impl SettingsRepository {
         let music_raw: String = row.get("music_text_channel_ids");
         let private_voice_raw: String = row.get("private_voice_allowed_channel_ids");
         let temp_voice_category_id: Option<i64> = row.get("temp_voice_category_id");
-        let legacy_temp_voice_lobby_channel_id: Option<i64> = row.get("temp_voice_lobby_channel_id");
-        let temp_voice_public_lobby_channel_id: Option<i64> = row.get("temp_voice_public_lobby_channel_id");
+        let legacy_temp_voice_lobby_channel_id: Option<i64> =
+            row.get("temp_voice_lobby_channel_id");
+        let temp_voice_public_lobby_channel_id: Option<i64> =
+            row.get("temp_voice_public_lobby_channel_id");
         let temp_voice_private_lobby_channel_id: Option<i64> =
             row.get("temp_voice_private_lobby_channel_id");
         let mod_channel_id: Option<i64> = row.get("mod_channel_id");
@@ -161,9 +167,21 @@ impl SettingsRepository {
             &settings.private_voice_allowed_channel_ids,
         ))
         .bind(settings.temp_voice_category_id.map(|v| v.get() as i64))
-        .bind(settings.temp_voice_private_lobby_channel_id.map(|v| v.get() as i64))
-        .bind(settings.temp_voice_public_lobby_channel_id.map(|v| v.get() as i64))
-        .bind(settings.temp_voice_private_lobby_channel_id.map(|v| v.get() as i64))
+        .bind(
+            settings
+                .temp_voice_private_lobby_channel_id
+                .map(|v| v.get() as i64),
+        )
+        .bind(
+            settings
+                .temp_voice_public_lobby_channel_id
+                .map(|v| v.get() as i64),
+        )
+        .bind(
+            settings
+                .temp_voice_private_lobby_channel_id
+                .map(|v| v.get() as i64),
+        )
         .bind(settings.mod_channel_id.map(|v| v.get() as i64))
         .execute(&self.pool)
         .await

@@ -4,15 +4,18 @@ use std::time::Duration;
 use anyhow::Context as _;
 #[cfg(feature = "lavalink")]
 use lavalink_rs::model::track::{TrackData, TrackInfo};
-use serenity::all::EditVoiceState;
 use serenity::all::{ChannelId, GuildId};
 use serenity::client::Context;
 use tokio::task::JoinHandle;
+use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 
 use crate::get_lavalink_client;
+use crate::get_state;
 use crate::utils::discord_embed::error_embed;
 #[cfg(feature = "lavalink")]
 use crate::utils::lavalink_client::try_create_player_context;
+
+const IDLE_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct SongItem {
@@ -50,29 +53,109 @@ impl MusicQueue {
                 .await
                 .context("Failed to resolve channel")?;
             let guild_channel = channel.guild().context("Target is not a guild channel")?;
-
             let bot_user_id = _ctx.cache.current_user().id;
 
-            if let Err(move_err) = guild_channel
-                .guild_id
-                .move_member(&_ctx.http, bot_user_id, _channel_id)
-                .await
+            if guild_channel.kind != serenity::all::ChannelType::Voice
+                && guild_channel.kind != serenity::all::ChannelType::Stage
             {
-                guild_channel
-                    .edit_own_voice_state(&_ctx.http, EditVoiceState::new())
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to update bot voice state. move_member error: {move_err}"
-                        )
-                    })?;
+                anyhow::bail!("Target channel is not a voice or stage channel")
+            }
+
+            let current_bot_channel_id = guild_channel
+                .guild_id
+                .to_guild_cached(&_ctx.cache)
+                .and_then(|guild| {
+                    guild
+                        .voice_states
+                        .get(&bot_user_id)
+                        .and_then(|state| state.channel_id)
+                });
+
+            if current_bot_channel_id != Some(_channel_id) {
+                let payload = serde_json::json!({
+                    "op": 4,
+                    "d": {
+                        "guild_id": guild_channel.guild_id.get().to_string(),
+                        "channel_id": _channel_id.get().to_string(),
+                        "self_mute": false,
+                        "self_deaf": false
+                    }
+                });
+
+                _ctx.shard
+                    .websocket_message(WebSocketMessage::Text(payload.to_string().into()));
+
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let bot_channel_id = guild_channel
+                            .guild_id
+                            .to_guild_cached(&_ctx.cache)
+                            .and_then(|guild| {
+                                guild
+                                    .voice_states
+                                    .get(&bot_user_id)
+                                    .and_then(|state| state.channel_id)
+                            });
+
+                        if bot_channel_id == Some(_channel_id) {
+                            break;
+                        }
+
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                })
+                .await
+                .with_context(|| {
+                    format!(
+                        "Timed out while waiting for bot voice state update into channel {} after sending gateway VOICE_STATE_UPDATE",
+                        _channel_id.get()
+                    )
+                })?;
             }
         }
 
         Ok(())
     }
 
+    async fn disconnect_from_voice(ctx: &Context, guild_id: GuildId) -> anyhow::Result<()> {
+        #[cfg(feature = "lavalink")]
+        if let Some(client) = get_lavalink_client(ctx).await? {
+            client
+                .delete_player(guild_id)
+                .await
+                .context("Failed to delete lavalink player")?;
+        }
+
+        let payload = serde_json::json!({
+            "op": 4,
+            "d": {
+                "guild_id": guild_id.get().to_string(),
+                "channel_id": null,
+                "self_mute": false,
+                "self_deaf": false
+            }
+        });
+
+        ctx.shard
+            .websocket_message(WebSocketMessage::Text(payload.to_string().into()));
+
+        Ok(())
+    }
+
+    fn is_idle(&self) -> bool {
+        self.current.is_none() && self.songs.is_empty()
+    }
+
+    fn refresh_disconnect_timeout(&mut self, ctx: &Context) {
+        if self.is_idle() {
+            self.start_disconnect_timeout(ctx, IDLE_DISCONNECT_TIMEOUT);
+        } else {
+            self.clear_disconnect_timeout();
+        }
+    }
+
     pub fn enqueue_song(&mut self, song: SongItem) -> bool {
+        self.clear_disconnect_timeout();
         let is_first = self.current.is_none();
         if is_first {
             self.current = Some(song.clone());
@@ -118,24 +201,29 @@ impl MusicQueue {
     pub async fn handle_song_end(&mut self, ctx: &Context) -> anyhow::Result<Option<SongItem>> {
         self.songs.pop_front();
         self.current = self.songs.front().cloned();
+        self.refresh_disconnect_timeout(ctx);
         self.play(ctx).await
     }
 
-    pub async fn skip(&mut self) -> anyhow::Result<()> {
+    pub async fn skip(&mut self, ctx: &Context) -> anyhow::Result<()> {
         self.songs.pop_front();
         self.current = self.songs.front().cloned();
+        self.refresh_disconnect_timeout(ctx);
         Ok(())
     }
 
-    pub async fn stop(&mut self) -> anyhow::Result<()> {
+    pub async fn stop(&mut self, ctx: &Context) -> anyhow::Result<()> {
         self.songs.clear();
         self.current = None;
+        self.refresh_disconnect_timeout(ctx);
         Ok(())
     }
 
-    pub async fn destroy(&mut self, _ctx: &Context) -> anyhow::Result<()> {
+    pub async fn destroy(&mut self, ctx: &Context) -> anyhow::Result<()> {
         self.clear_disconnect_timeout();
-        self.stop().await
+        self.songs.clear();
+        self.current = None;
+        Self::disconnect_from_voice(ctx, self.guild_id).await
     }
 
     pub async fn send_error(&self, ctx: &Context, message: &str) -> anyhow::Result<()> {
@@ -149,10 +237,31 @@ impl MusicQueue {
         Ok(())
     }
 
-    pub fn start_disconnect_timeout(&mut self, timeout: Duration) {
+    pub fn start_disconnect_timeout(&mut self, ctx: &Context, timeout: Duration) {
         self.clear_disconnect_timeout();
+        let ctx = ctx.clone();
+        let guild_id = self.guild_id;
         self.disconnect_timeout = Some(tokio::spawn(async move {
             tokio::time::sleep(timeout).await;
+
+            let Ok(state) = get_state(&ctx).await else {
+                return;
+            };
+
+            let Some(queue) = state.music_manager.get_queue(guild_id).await else {
+                return;
+            };
+
+            let mut queue = queue.write().await;
+            if !queue.is_idle() {
+                return;
+            }
+
+            queue.disconnect_timeout = None;
+            if queue.destroy(&ctx).await.is_ok() {
+                drop(queue);
+                state.music_manager.delete_queue(guild_id).await;
+            }
         }));
     }
 
