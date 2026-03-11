@@ -3,10 +3,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use tracing::{debug, warn};
-#[cfg(feature = "lavalink")]
-use lavalink_rs::model::track::{TrackData, TrackInfo};
-// UpdatePlayer / UpdatePlayerTrack not used (raw_request workaround for lavalink-rs 0.15.0 deserialization bug)
-use lavalink_rs::model::track::{TrackData, TrackInfo};
 use serenity::all::{ChannelId, GuildId};
 use serenity::client::Context;
 use tokio::task::JoinHandle;
@@ -383,7 +379,7 @@ impl MusicQueue {
             true,
         )
         .map_err(|e| anyhow::anyhow!("Failed to build Lavalink player URI: {e}"))?;
-        let encoded_clone = track.encoded.clone();
+        let encoded_clone = encoded.clone();
         let patch_body = serde_json::json!({
             "track": { "encoded": encoded_clone },
             "paused": false
@@ -492,24 +488,3 @@ impl MusicQueue {
     }
 }
 
-#[cfg(feature = "lavalink")]
-fn track_from_song(song: SongItem, encoded: String) -> TrackData {
-    TrackData {
-        encoded,
-        info: TrackInfo {
-            identifier: song.url.clone(),
-            is_seekable: true,
-            author: song.requested_by,
-            length: song.duration_ms.unwrap_or(0),
-            is_stream: false,
-            position: 0,
-            title: song.title,
-            uri: Some(song.url),
-            artwork_url: None,
-            isrc: None,
-            source_name: "lavalink".to_string(),
-        },
-        plugin_info: None,
-        user_data: None,
-    }
-}

@@ -3,7 +3,6 @@ use serenity::all::VoiceState;
 use serenity::client::Context;
 
 use crate::get_state;
-use crate::utils::lavalink_client::lavalink_enabled_from_env;
 
 pub async fn run(ctx: &Context, new_state: &VoiceState) -> anyhow::Result<()> {
     let Some(guild_id) = new_state.guild_id else {
