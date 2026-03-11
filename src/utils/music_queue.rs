@@ -147,6 +147,31 @@ impl MusicQueue {
             // By this point the voice events have been sent by Discord and should
             // have been received by the lavalink-rs internal handler.
             if let (Some(client), Some(fut)) = (lavalink_client, connection_info_fut) {
+                // Wait for the Lavalink node's session_id to be set from the WS Ready event.
+                // The default placeholder is the node index as a string (e.g. "0").
+                // If we call create_player before Ready is received, the REST URL will be
+                // /v4/sessions/0/players/{guild} which Lavalink rejects with a non-JSON body,
+                // causing the untagged-enum deserialization failure.
+                if let Some(node) = client.nodes.first() {
+                    tokio::time::timeout(Duration::from_secs(8), async {
+                        loop {
+                            let sid = node.session_id.load();
+                            // The placeholder is a small integer string ("0", "1", ...); a real
+                            // Lavalink session ID is a UUID-like hex string, never a bare integer.
+                            if sid.parse::<usize>().is_err() {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    })
+                    .await
+                    .with_context(|| "Timed out waiting for Lavalink node Ready event (session_id never became a real UUID). Check that the Lavalink server is running and reachable.")?;
+
+                    tracing::debug!(
+                        "[Lavalink] node session_id is ready: {:?}",
+                        client.nodes.first().map(|n| n.session_id.load().to_string())
+                    );
+                }
                 let connection_info = fut
                     .await
                     .context("get_connection_info task panicked")?
