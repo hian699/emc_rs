@@ -109,6 +109,38 @@ impl EventHandler for Handler {
                 tokio::spawn(async move {
                     if let Err(err) = commands::dispatch_slash(&ctx, &command).await {
                         error!("Slash command failed: {err}");
+                        // Try to surface the error to the user as an ephemeral reply.
+                        // If the interaction was already deferred/responded we must use
+                        // edit_response; otherwise use create_response.
+                        use serenity::all::{
+                            CreateInteractionResponse, CreateInteractionResponseMessage,
+                            EditInteractionResponse,
+                        };
+                        use crate::utils::discord_embed::error_embed;
+                        let embed = error_embed("Error", format!("{err}"));
+                        let via_edit = command
+                            .get_response(&ctx.http)
+                            .await
+                            .is_ok();
+                        if via_edit {
+                            let _ = command
+                                .edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new().embed(embed),
+                                )
+                                .await;
+                        } else {
+                            let _ = command
+                                .create_response(
+                                    &ctx.http,
+                                    CreateInteractionResponse::Message(
+                                        CreateInteractionResponseMessage::new()
+                                            .ephemeral(true)
+                                            .embed(embed),
+                                    ),
+                                )
+                                .await;
+                        }
                     }
                 });
             }
@@ -117,6 +149,35 @@ impl EventHandler for Handler {
                 tokio::spawn(async move {
                     if let Err(err) = components::dispatch_component(&ctx, &component).await {
                         error!("Component interaction failed: {err}");
+                        use serenity::all::{
+                            CreateInteractionResponse, CreateInteractionResponseMessage,
+                            EditInteractionResponse,
+                        };
+                        use crate::utils::discord_embed::error_embed;
+                        let embed = error_embed("Error", format!("{err}"));
+                        let via_edit = component
+                            .get_response(&ctx.http)
+                            .await
+                            .is_ok();
+                        if via_edit {
+                            let _ = component
+                                .edit_response(
+                                    &ctx.http,
+                                    EditInteractionResponse::new().embed(embed),
+                                )
+                                .await;
+                        } else {
+                            let _ = component
+                                .create_response(
+                                    &ctx.http,
+                                    CreateInteractionResponse::Message(
+                                        CreateInteractionResponseMessage::new()
+                                            .ephemeral(true)
+                                            .embed(embed),
+                                    ),
+                                )
+                                .await;
+                        }
                     }
                 });
             }

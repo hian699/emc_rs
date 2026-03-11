@@ -29,7 +29,7 @@ services:
     restart: "no"
 
   lavalink:
-    image: ghcr.io/lavalink-devs/lavalink:4
+    image: ghcr.io/lavalink-devs/lavalink:4.2
     depends_on:
       - fix-perms
     container_name: emc-rs-lavalink
