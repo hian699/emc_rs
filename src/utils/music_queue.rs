@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 #[cfg(feature = "lavalink")]
+use lavalink_rs::model::http::{UpdatePlayer, UpdatePlayerTrack};
+#[cfg(feature = "lavalink")]
 use lavalink_rs::model::track::{TrackData, TrackInfo};
 use serenity::all::{ChannelId, GuildId};
 use serenity::client::Context;
@@ -12,8 +14,6 @@ use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 use crate::get_lavalink_client;
 use crate::get_state;
 use crate::utils::discord_embed::error_embed;
-#[cfg(feature = "lavalink")]
-use crate::utils::lavalink_client::try_create_player_context;
 
 const IDLE_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const AUTO_LEAVE_SUPPRESSION_WINDOW: Duration = Duration::from_secs(20);
@@ -205,21 +205,8 @@ impl MusicQueue {
 
         #[cfg(feature = "lavalink")]
         {
-            if let Some(client) = get_lavalink_client(_ctx).await? {
-                let encoded = song.lavalink_encoded_track.clone();
-                if let Some(encoded) = encoded {
-                    let player = if let Some(existing) = client.get_player_context(guild_id) {
-                        existing
-                    } else {
-                        try_create_player_context(&client, guild_id).await?
-                    };
-
-                    let track = track_from_song(song.clone(), encoded);
-                    player.queue(track.clone())?;
-                    if play_now {
-                        player.play_now(&track).await?;
-                    }
-                }
+            if play_now {
+                Self::play_song_now(_ctx, guild_id, song).await?;
             }
         }
 
@@ -234,6 +221,11 @@ impl MusicQueue {
         self.songs.pop_front();
         self.current = self.songs.front().cloned();
         self.refresh_disconnect_timeout(ctx);
+
+        if let Some(song) = self.current.clone() {
+            Self::play_song_now(ctx, self.guild_id, &song).await?;
+        }
+
         self.play(ctx).await
     }
 
@@ -241,6 +233,13 @@ impl MusicQueue {
         self.songs.pop_front();
         self.current = self.songs.front().cloned();
         self.refresh_disconnect_timeout(ctx);
+
+        if let Some(song) = self.current.clone() {
+            Self::play_song_now(ctx, self.guild_id, &song).await?;
+        } else {
+            Self::stop_remote_playback(ctx, self.guild_id).await?;
+        }
+
         Ok(())
     }
 
@@ -248,6 +247,72 @@ impl MusicQueue {
         self.songs.clear();
         self.current = None;
         self.refresh_disconnect_timeout(ctx);
+        Self::stop_remote_playback(ctx, self.guild_id).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "lavalink")]
+    async fn play_song_now(ctx: &Context, guild_id: GuildId, song: &SongItem) -> anyhow::Result<()> {
+        let Some(client) = get_lavalink_client(ctx).await? else {
+            return Ok(());
+        };
+
+        let Some(encoded) = song.lavalink_encoded_track.clone() else {
+            return Ok(());
+        };
+
+        let track = track_from_song(song.clone(), encoded);
+        let mut update = UpdatePlayer {
+            track: Some(UpdatePlayerTrack {
+                encoded: Some(track.encoded.clone()),
+                user_data: track.user_data.clone(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        if let Ok(info) = client.get_connection_info(guild_id, Duration::from_secs(10)).await {
+            update.voice = Some(info);
+        }
+
+        client
+            .update_player(guild_id, &update, false)
+            .await
+            .context("Failed to update Lavalink player for current song")?;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "lavalink"))]
+    async fn play_song_now(
+        _ctx: &Context,
+        _guild_id: GuildId,
+        _song: &SongItem,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    #[cfg(feature = "lavalink")]
+    async fn stop_remote_playback(ctx: &Context, guild_id: GuildId) -> anyhow::Result<()> {
+        let Some(client) = get_lavalink_client(ctx).await? else {
+            return Ok(());
+        };
+
+        client
+            .update_player(
+                guild_id,
+                &UpdatePlayer {
+                    track: Some(UpdatePlayerTrack::default()),
+                    ..Default::default()
+                },
+                false,
+            )
+            .await
+            .context("Failed to stop Lavalink playback")?;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "lavalink"))]
+    async fn stop_remote_playback(_ctx: &Context, _guild_id: GuildId) -> anyhow::Result<()> {
         Ok(())
     }
 

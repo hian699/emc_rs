@@ -5,7 +5,7 @@ use serenity::all::{
 };
 use serenity::client::Context;
 
-use crate::components::select_menu::music_search::format_duration;
+use crate::components::select_menu::music_search::{format_duration, format_song_option_label};
 use crate::get_lavalink_client;
 use crate::get_state;
 use crate::utils::access_control::ensure_music_channel_for_message;
@@ -103,7 +103,20 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
             let mut q = queue.write().await;
             q.enqueue_song(item.clone())
         };
-        MusicQueue::sync_lavalink_enqueue(ctx, guild_id, &item, should_play_now).await?;
+        if let Err(err) = MusicQueue::sync_lavalink_enqueue(ctx, guild_id, &item, should_play_now).await
+        {
+            message
+                .channel_id
+                .send_message(
+                    &ctx.http,
+                    CreateMessage::new().embed(warning_embed(
+                        "Playback Failed",
+                        format!("Failed to start Lavalink playback.\nDetails: {err}"),
+                    )),
+                )
+                .await?;
+            return Ok(());
+        }
 
         message
             .channel_id
@@ -196,7 +209,7 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
         .take(25)
         .map(|song| {
             CreateSelectMenuOption::new(
-                format!("{} ({})", song.title, format_duration(song.duration_ms)),
+                format_song_option_label(&song.title, song.duration_ms),
                 song.url.clone(),
             )
         })

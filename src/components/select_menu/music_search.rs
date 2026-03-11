@@ -6,7 +6,7 @@ use serenity::all::{
 use serenity::client::Context;
 
 use crate::get_state;
-use crate::utils::discord_embed::success_embed;
+use crate::utils::discord_embed::{success_embed, warning_embed};
 use crate::utils::music_queue::{MusicQueue, AUTO_LEAVE_SUPPRESSION_WINDOW};
 
 pub fn format_duration(ms: Option<u64>) -> String {
@@ -18,6 +18,25 @@ pub fn format_duration(ms: Option<u64>) -> String {
     let min = total_sec / 60;
     let sec = total_sec % 60;
     format!("{min:02}:{sec:02}")
+}
+
+pub fn format_song_option_label(title: &str, duration_ms: Option<u64>) -> String {
+    const MAX_LABEL_CHARS: usize = 100;
+    let suffix = format!(" ({})", format_duration(duration_ms));
+    let suffix_len = suffix.chars().count();
+    let max_title_len = MAX_LABEL_CHARS.saturating_sub(suffix_len);
+
+    let safe_title = if title.chars().count() <= max_title_len {
+        title.to_string()
+    } else if max_title_len <= 3 {
+        "...".chars().take(max_title_len).collect()
+    } else {
+        let mut truncated: String = title.chars().take(max_title_len - 3).collect();
+        truncated.push_str("...");
+        truncated
+    };
+
+    format!("{safe_title}{suffix}")
 }
 
 pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::Result<()> {
@@ -63,7 +82,21 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
         let mut q = queue.write().await;
         q.enqueue_song(picked.clone())
     };
-    MusicQueue::sync_lavalink_enqueue(ctx, guild_id, &picked, should_play_now).await?;
+    if let Err(err) = MusicQueue::sync_lavalink_enqueue(ctx, guild_id, &picked, should_play_now).await
+    {
+        interaction
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::UpdateMessage(
+                    CreateInteractionResponseMessage::new().embed(warning_embed(
+                        "Playback Failed",
+                        format!("Failed to start Lavalink playback.\nDetails: {err}"),
+                    )),
+                ),
+            )
+            .await?;
+        return Ok(());
+    }
 
     state.search_cache.write().await.cleanup();
 

@@ -1,13 +1,12 @@
 use anyhow::Context as _;
 use serenity::all::{
     CommandInteraction, CommandOptionType, CreateActionRow, CreateCommand, CreateCommandOption,
-    CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu,
-    CreateSelectMenuKind, CreateSelectMenuOption,
+    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
 };
 use serenity::client::Context;
 
 use crate::commands::get_string_option;
-use crate::components::select_menu::music_search::format_duration;
+use crate::components::select_menu::music_search::{format_duration, format_song_option_label};
 use crate::get_lavalink_client;
 use crate::get_state;
 use crate::utils::access_control::ensure_music_channel_for_slash;
@@ -45,6 +44,8 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
         })
         .context("Join a voice channel first")?;
 
+    command.defer(&ctx.http).await?;
+
     let queue = if let Some(q) = state.music_manager.get_queue(guild_id).await {
         q
     } else {
@@ -62,16 +63,12 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
     if query.starts_with("http://") || query.starts_with("https://") {
         if let Err(err) = MusicQueue::connect(ctx, voice_channel_id).await {
             command
-                .create_response(
+                .edit_response(
                     &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new().embed(warning_embed(
-                            "Voice Connect Failed",
-                            format!(
-                                "Cannot connect the bot to your voice channel.\nDetails: {err}"
-                            ),
-                        )),
-                    ),
+                    EditInteractionResponse::new().embed(warning_embed(
+                        "Voice Connect Failed",
+                        format!("Cannot connect the bot to your voice channel.\nDetails: {err}"),
+                    )),
                 )
                 .await?;
             return Ok(());
@@ -116,16 +113,26 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
             let mut q = queue.write().await;
             q.enqueue_song(item.clone())
         };
-        MusicQueue::sync_lavalink_enqueue(ctx, guild_id, &item, should_play_now).await?;
+        if let Err(err) = MusicQueue::sync_lavalink_enqueue(ctx, guild_id, &item, should_play_now).await
+        {
+            command
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().embed(warning_embed(
+                        "Playback Failed",
+                        format!("Failed to start Lavalink playback.\nDetails: {err}"),
+                    )),
+                )
+                .await?;
+            return Ok(());
+        }
 
         command
-            .create_response(
+            .edit_response(
                 &ctx.http,
-                CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().embed(
-                    success_embed(
-                        "Song Added",
-                        format!("**{}** ({})", item.title, format_duration(item.duration_ms)),
-                    ),
+                EditInteractionResponse::new().embed(success_embed(
+                    "Song Added",
+                    format!("**{}** ({})", item.title, format_duration(item.duration_ms)),
                 )),
             )
             .await?;
@@ -175,12 +182,10 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
 
     if songs.is_empty() {
         command
-            .create_response(
+            .edit_response(
                 &ctx.http,
-                CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .embed(warning_embed("No Results", "No search results found")),
-                ),
+                EditInteractionResponse::new()
+                    .embed(warning_embed("No Results", "No search results found")),
             )
             .await?;
         return Ok(());
@@ -195,13 +200,11 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
 
     if let Err(err) = MusicQueue::connect(ctx, voice_channel_id).await {
         command
-            .create_response(
+            .edit_response(
                 &ctx.http,
-                CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().embed(
-                    warning_embed(
-                        "Voice Connect Failed",
-                        format!("Cannot connect the bot to your voice channel.\nDetails: {err}"),
-                    ),
+                EditInteractionResponse::new().embed(warning_embed(
+                    "Voice Connect Failed",
+                    format!("Cannot connect the bot to your voice channel.\nDetails: {err}"),
                 )),
             )
             .await?;
@@ -213,7 +216,7 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
         .take(25)
         .map(|song| {
             CreateSelectMenuOption::new(
-                format!("{} ({})", song.title, format_duration(song.duration_ms)),
+                format_song_option_label(&song.title, song.duration_ms),
                 song.url.clone(),
             )
         })
@@ -226,16 +229,14 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
     .placeholder("Select a song to add to queue");
 
     command
-        .create_response(
+        .edit_response(
             &ctx.http,
-            CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .embed(info_embed(
-                        "Search Results",
-                        "Select one song from the menu below.",
-                    ))
-                    .components(vec![CreateActionRow::SelectMenu(select)]),
-            ),
+            EditInteractionResponse::new()
+                .embed(info_embed(
+                    "Search Results",
+                    "Select one song from the menu below.",
+                ))
+                .components(vec![CreateActionRow::SelectMenu(select)]),
         )
         .await?;
 
