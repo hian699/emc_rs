@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 #[cfg(feature = "lavalink")]
@@ -16,6 +16,7 @@ use crate::utils::discord_embed::error_embed;
 use crate::utils::lavalink_client::try_create_player_context;
 
 const IDLE_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+pub const AUTO_LEAVE_SUPPRESSION_WINDOW: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Debug)]
 pub struct SongItem {
@@ -32,6 +33,7 @@ pub struct MusicQueue {
     songs: VecDeque<SongItem>,
     current: Option<SongItem>,
     disconnect_timeout: Option<JoinHandle<()>>,
+    auto_leave_suppressed_until: Option<Instant>,
 }
 
 impl MusicQueue {
@@ -42,6 +44,7 @@ impl MusicQueue {
             songs: VecDeque::new(),
             current: None,
             disconnect_timeout: None,
+            auto_leave_suppressed_until: None,
         }
     }
 
@@ -54,6 +57,14 @@ impl MusicQueue {
                 .context("Failed to resolve channel")?;
             let guild_channel = channel.guild().context("Target is not a guild channel")?;
             let bot_user_id = _ctx.cache.current_user().id;
+            let state = get_state(_ctx).await?;
+
+            if let Some(queue) = state.music_manager.get_queue(guild_channel.guild_id).await {
+                queue
+                    .write()
+                    .await
+                    .suppress_auto_leave(AUTO_LEAVE_SUPPRESSION_WINDOW);
+            }
 
             if guild_channel.kind != serenity::all::ChannelType::Voice
                 && guild_channel.kind != serenity::all::ChannelType::Stage
@@ -146,6 +157,19 @@ impl MusicQueue {
         self.current.is_none() && self.songs.is_empty()
     }
 
+    pub fn suppress_auto_leave(&mut self, duration: Duration) {
+        let until = Instant::now() + duration;
+        self.auto_leave_suppressed_until = Some(
+            self.auto_leave_suppressed_until
+                .map_or(until, |current| current.max(until)),
+        );
+    }
+
+    pub fn is_auto_leave_suppressed(&self) -> bool {
+        self.auto_leave_suppressed_until
+            .is_some_and(|until| until > Instant::now())
+    }
+
     fn refresh_disconnect_timeout(&mut self, ctx: &Context) {
         if self.is_idle() {
             self.start_disconnect_timeout(ctx, IDLE_DISCONNECT_TIMEOUT);
@@ -171,6 +195,14 @@ impl MusicQueue {
         song: &SongItem,
         play_now: bool,
     ) -> anyhow::Result<()> {
+        let state = get_state(_ctx).await?;
+        if let Some(queue) = state.music_manager.get_queue(guild_id).await {
+            queue
+                .write()
+                .await
+                .suppress_auto_leave(AUTO_LEAVE_SUPPRESSION_WINDOW);
+        }
+
         #[cfg(feature = "lavalink")]
         {
             if let Some(client) = get_lavalink_client(_ctx).await? {
@@ -223,6 +255,7 @@ impl MusicQueue {
         self.clear_disconnect_timeout();
         self.songs.clear();
         self.current = None;
+        self.auto_leave_suppressed_until = None;
         Self::disconnect_from_voice(ctx, self.guild_id).await
     }
 

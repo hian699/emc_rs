@@ -14,6 +14,10 @@ pub async fn run(ctx: &Context, new_state: &VoiceState) -> anyhow::Result<()> {
         return Ok(());
     };
 
+    if queue.read().await.is_auto_leave_suppressed() {
+        return Ok(());
+    }
+
     let bot_user_id = ctx.cache.current_user().id;
     let (bot_voice_channel, non_bot_count) = {
         let guild = guild_id

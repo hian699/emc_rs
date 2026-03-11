@@ -11,7 +11,7 @@ use crate::get_state;
 use crate::utils::access_control::ensure_music_channel_for_message;
 use crate::utils::discord_embed::{info_embed, success_embed, warning_embed};
 use crate::utils::lavalink_client::search_tracks;
-use crate::utils::music_queue::MusicQueue;
+use crate::utils::music_queue::{MusicQueue, AUTO_LEAVE_SUPPRESSION_WINDOW};
 use crate::utils::music_queue::SongItem;
 use crate::utils::ytdlp_helper::YtDlpHelper;
 
@@ -43,6 +43,11 @@ pub async fn run(ctx: &Context, message: &Message, query: &str) -> anyhow::Resul
             .create_queue(guild_id, message.channel_id)
             .await
     };
+
+    queue
+        .write()
+        .await
+        .suppress_auto_leave(AUTO_LEAVE_SUPPRESSION_WINDOW);
 
     if query.starts_with("http://") || query.starts_with("https://") {
         if let Err(err) = MusicQueue::connect(ctx, voice_channel_id).await {

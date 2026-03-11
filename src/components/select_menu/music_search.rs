@@ -7,7 +7,7 @@ use serenity::client::Context;
 
 use crate::get_state;
 use crate::utils::discord_embed::success_embed;
-use crate::utils::music_queue::MusicQueue;
+use crate::utils::music_queue::{MusicQueue, AUTO_LEAVE_SUPPRESSION_WINDOW};
 
 pub fn format_duration(ms: Option<u64>) -> String {
     let Some(total_ms) = ms else {
@@ -53,6 +53,11 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
             .create_queue(guild_id, interaction.channel_id)
             .await
     };
+
+    queue
+        .write()
+        .await
+        .suppress_auto_leave(AUTO_LEAVE_SUPPRESSION_WINDOW);
 
     let should_play_now = {
         let mut q = queue.write().await;

@@ -293,6 +293,10 @@ pub async fn try_create_player_context(
     let mut last_err = None;
 
     for attempt in 1..=3 {
+        if let Some(existing) = client.get_player_context(guild_id) {
+            return Ok(existing);
+        }
+
         let info = match client
             .get_connection_info(guild_id, Duration::from_secs(10))
             .await
@@ -303,7 +307,7 @@ pub async fn try_create_player_context(
                     anyhow::Error::new(err)
                         .context("Missing voice connection info from Discord events"),
                 );
-                tokio::time::sleep(Duration::from_millis(400 * attempt)).await;
+                tokio::time::sleep(Duration::from_millis(600 * attempt)).await;
                 continue;
             }
         };
@@ -327,8 +331,11 @@ pub async fn try_create_player_context(
             }
         }
 
-        let _ = client.delete_player(guild_id).await;
-        tokio::time::sleep(Duration::from_millis(400 * attempt)).await;
+        if let Some(existing) = client.get_player_context(guild_id) {
+            return Ok(existing);
+        }
+
+        tokio::time::sleep(Duration::from_millis(600 * attempt)).await;
     }
 
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Failed to create lavalink player context")))
