@@ -54,7 +54,9 @@ fn handle_track_start(
             return;
         };
 
-        queue.write().await.clear_disconnect_timeout();
+        let mut queue = queue.write().await;
+        queue.mark_playing();
+        queue.clear_disconnect_timeout();
     })
 }
 

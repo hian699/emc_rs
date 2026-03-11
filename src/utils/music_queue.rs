@@ -32,6 +32,7 @@ pub struct MusicQueue {
     pub text_channel_id: ChannelId,
     songs: VecDeque<SongItem>,
     current: Option<SongItem>,
+    is_playing: bool,
     disconnect_timeout: Option<JoinHandle<()>>,
     auto_leave_suppressed_until: Option<Instant>,
 }
@@ -43,6 +44,7 @@ impl MusicQueue {
             text_channel_id,
             songs: VecDeque::new(),
             current: None,
+            is_playing: false,
             disconnect_timeout: None,
             auto_leave_suppressed_until: None,
         }
@@ -123,8 +125,6 @@ impl MusicQueue {
                     )
                 })?;
             }
-
-            Self::ensure_lavalink_voice_connected(_ctx, guild_channel.guild_id).await?;
         }
 
         Ok(())
@@ -172,6 +172,10 @@ impl MusicQueue {
             .is_some_and(|until| until > Instant::now())
     }
 
+    pub fn mark_playing(&mut self) {
+        self.is_playing = true;
+    }
+
     fn refresh_disconnect_timeout(&mut self, ctx: &Context) {
         if self.is_idle() {
             self.start_disconnect_timeout(ctx, IDLE_DISCONNECT_TIMEOUT);
@@ -182,33 +186,35 @@ impl MusicQueue {
 
     pub fn enqueue_song(&mut self, song: SongItem) -> bool {
         self.clear_disconnect_timeout();
-        let is_first = self.current.is_none();
-        if is_first {
+        let should_start = !self.is_playing;
+        if self.current.is_none() {
             self.current = Some(song.clone());
         }
         self.songs.push_back(song);
 
-        is_first
+        should_start
     }
 
     pub async fn sync_lavalink_enqueue(
         _ctx: &Context,
         guild_id: GuildId,
-        song: &SongItem,
+        _song: &SongItem,
         play_now: bool,
     ) -> anyhow::Result<()> {
         let state = get_state(_ctx).await?;
+        let mut song_to_start = None;
         if let Some(queue) = state.music_manager.get_queue(guild_id).await {
-            queue
-                .write()
-                .await
-                .suppress_auto_leave(AUTO_LEAVE_SUPPRESSION_WINDOW);
+            let mut queue = queue.write().await;
+            queue.suppress_auto_leave(AUTO_LEAVE_SUPPRESSION_WINDOW);
+            if play_now {
+                song_to_start = queue.current.clone();
+            }
         }
 
         #[cfg(feature = "lavalink")]
         {
-            if play_now {
-                Self::play_song_now(_ctx, guild_id, song).await?;
+            if let Some(song) = song_to_start {
+                Self::play_song_now(_ctx, guild_id, &song).await?;
             }
         }
 
@@ -222,6 +228,7 @@ impl MusicQueue {
     pub async fn handle_song_end(&mut self, ctx: &Context) -> anyhow::Result<Option<SongItem>> {
         self.songs.pop_front();
         self.current = self.songs.front().cloned();
+        self.is_playing = false;
         self.refresh_disconnect_timeout(ctx);
 
         if let Some(song) = self.current.clone() {
@@ -234,6 +241,7 @@ impl MusicQueue {
     pub async fn skip(&mut self, ctx: &Context) -> anyhow::Result<()> {
         self.songs.pop_front();
         self.current = self.songs.front().cloned();
+        self.is_playing = false;
         self.refresh_disconnect_timeout(ctx);
 
         if let Some(song) = self.current.clone() {
@@ -248,6 +256,7 @@ impl MusicQueue {
     pub async fn stop(&mut self, ctx: &Context) -> anyhow::Result<()> {
         self.songs.clear();
         self.current = None;
+        self.is_playing = false;
         self.refresh_disconnect_timeout(ctx);
         Self::stop_remote_playback(ctx, self.guild_id).await?;
         Ok(())
@@ -256,11 +265,11 @@ impl MusicQueue {
     #[cfg(feature = "lavalink")]
     async fn play_song_now(ctx: &Context, guild_id: GuildId, song: &SongItem) -> anyhow::Result<()> {
         let Some(client) = get_lavalink_client(ctx).await? else {
-            return Ok(());
+            anyhow::bail!("Lavalink client is not available")
         };
 
         let Some(encoded) = song.lavalink_encoded_track.clone() else {
-            return Ok(());
+            anyhow::bail!("Selected track does not have a Lavalink encoded stream")
         };
 
         Self::ensure_lavalink_voice_connected(ctx, guild_id).await?;
@@ -295,15 +304,7 @@ impl MusicQueue {
             .context("Missing voice connection info from Discord events")?;
 
         client
-            .update_player(
-                guild_id,
-                &UpdatePlayer {
-                    voice: Some(connection_info),
-                    paused: Some(false),
-                    ..Default::default()
-                },
-                true,
-            )
+            .create_player(guild_id, connection_info)
             .await
             .context("Failed to initialize Lavalink voice player")?;
 
@@ -356,6 +357,7 @@ impl MusicQueue {
         self.clear_disconnect_timeout();
         self.songs.clear();
         self.current = None;
+        self.is_playing = false;
         self.auto_leave_suppressed_until = None;
         Self::disconnect_from_voice(ctx, self.guild_id).await
     }
