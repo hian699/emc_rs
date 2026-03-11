@@ -103,24 +103,18 @@ impl MusicQueue {
                 .await
                 .ok_or_else(|| anyhow::anyhow!("Songbird is not registered in the serenity client"))?;
 
-            let call = manager
-                .join(guild_id, _channel_id)
+            // join_gateway() sends OP4 and waits for VOICE_STATE_UPDATE +
+            // VOICE_SERVER_UPDATE, then returns the fresh ConnectionInfo.
+            // Does NOT start an audio driver — perfect for lavalink use.
+            let (conn_info, _call) = manager
+                .join_gateway(guild_id, _channel_id)
                 .await
-                .context("Songbird failed to join voice channel")?;
-
-            // Fresh voice connection info — guaranteed valid after successful join().
-            let conn_info = {
-                let call_lock: tokio::sync::MutexGuard<'_, songbird::Call> = call.lock().await;
-                call_lock.current_connection().cloned()
-            };
-            let conn_info =
-                conn_info.ok_or_else(|| anyhow::anyhow!("Songbird has no connection info after join"))?;
+                .map_err(|e| anyhow::anyhow!("Songbird join_gateway failed: {:?}", e))?;
 
             debug!(
                 "[Lavalink] songbird joined: guild={:?} endpoint={:?} session={:?} token_len={}",
                 guild_id, conn_info.endpoint, conn_info.session_id, conn_info.token.len()
             );
-
             let lavalink_client = get_lavalink_client(_ctx).await?;
             let Some(client) = lavalink_client else {
                 return Ok(());
