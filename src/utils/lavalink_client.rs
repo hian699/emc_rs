@@ -7,7 +7,7 @@ use anyhow::Context as _;
 #[cfg(feature = "lavalink")]
 use lavalink_rs::model::BoxFuture;
 #[cfg(feature = "lavalink")]
-use lavalink_rs::model::events::{Events, TrackEnd, TrackStart};
+use lavalink_rs::model::events::{Events, TrackEnd, TrackException, TrackStart, WebSocketClosed};
 #[cfg(feature = "lavalink")]
 use lavalink_rs::model::track::TrackLoadData;
 #[cfg(feature = "lavalink")]
@@ -87,6 +87,57 @@ fn handle_track_end(
         };
 
         let _ = queue.write().await.handle_song_end(&ctx).await;
+    })
+}
+
+#[cfg(feature = "lavalink")]
+fn handle_track_exception(
+    _client: LavalinkClient,
+    _session_id: String,
+    event: &TrackException,
+) -> BoxFuture<'_, ()> {
+    let event = event.clone();
+    Box::pin(async move {
+        tracing::warn!(
+            "[Lavalink] TrackException guild={} track={:?} severity={} cause={} message={}",
+            event.guild_id.0,
+            event.track.info.title,
+            event.exception.severity,
+            event.exception.cause,
+            event.exception.message,
+        );
+        let Some(ctx) = lavalink_runtime_context() else {
+            return;
+        };
+        let Ok(state) = get_state(&ctx).await else {
+            return;
+        };
+        let Some(queue) = state
+            .music_manager
+            .get_queue(GuildId::new(event.guild_id.0))
+            .await
+        else {
+            return;
+        };
+        let _ = queue.write().await.handle_song_end(&ctx).await;
+    })
+}
+
+#[cfg(feature = "lavalink")]
+fn handle_websocket_closed(
+    _client: LavalinkClient,
+    _session_id: String,
+    event: &WebSocketClosed,
+) -> BoxFuture<'_, ()> {
+    let event = event.clone();
+    Box::pin(async move {
+        tracing::warn!(
+            "[Lavalink] WebSocketClosed guild={} code={} reason={:?} by_remote={}",
+            event.guild_id.0,
+            event.code,
+            event.reason,
+            event.by_remote,
+        );
     })
 }
 
@@ -189,6 +240,8 @@ pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result
         events: Events {
             track_start: Some(handle_track_start),
             track_end: Some(handle_track_end),
+            track_exception: Some(handle_track_exception),
+            websocket_closed: Some(handle_websocket_closed),
             ..Default::default()
         },
         session_id: None,
@@ -200,6 +253,8 @@ pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result
             Events {
                 track_start: Some(handle_track_start),
                 track_end: Some(handle_track_end),
+                track_exception: Some(handle_track_exception),
+                websocket_closed: Some(handle_websocket_closed),
                 ..Default::default()
             },
             vec![node],
