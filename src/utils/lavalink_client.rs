@@ -290,16 +290,46 @@ pub async fn try_create_player_context(
     client: &LavalinkClient,
     guild_id: GuildId,
 ) -> anyhow::Result<lavalink_rs::prelude::PlayerContext> {
-    let info = client
-        .get_connection_info(guild_id, Duration::from_secs(8))
+    let mut last_err = None;
+
+    for attempt in 1..=3 {
+        let info = match client
+            .get_connection_info(guild_id, Duration::from_secs(10))
+            .await
+        {
+            Ok(info) => info,
+            Err(err) => {
+                last_err = Some(
+                    anyhow::Error::new(err)
+                        .context("Missing voice connection info from Discord events"),
+                );
+                tokio::time::sleep(Duration::from_millis(400 * attempt)).await;
+                continue;
+            }
+        };
+
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            client.create_player_context(guild_id, info),
+        )
         .await
-        .context("Missing voice connection info from Discord events")?;
-    let player = tokio::time::timeout(
-        Duration::from_secs(8),
-        client.create_player_context(guild_id, info),
-    )
-    .await
-    .context("Timed out while creating lavalink player context")?
-    .context("Failed to create lavalink player context")?;
-    Ok(player)
+        {
+            Ok(Ok(player)) => return Ok(player),
+            Ok(Err(err)) => {
+                last_err = Some(anyhow::Error::new(err).context(format!(
+                    "Failed to create lavalink player context on attempt {attempt}"
+                )));
+            }
+            Err(err) => {
+                last_err = Some(anyhow::Error::new(err).context(format!(
+                    "Timed out while creating lavalink player context on attempt {attempt}"
+                )));
+            }
+        }
+
+        let _ = client.delete_player(guild_id).await;
+        tokio::time::sleep(Duration::from_millis(400 * attempt)).await;
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Failed to create lavalink player context")))
 }
