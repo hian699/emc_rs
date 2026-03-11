@@ -1,7 +1,7 @@
 use anyhow::Context as _;
 use serenity::all::{
     ComponentInteraction, ComponentInteractionDataKind, CreateInteractionResponse,
-    CreateInteractionResponseMessage, PermissionOverwrite, PermissionOverwriteType, Permissions,
+    EditInteractionResponse, PermissionOverwrite, PermissionOverwriteType, Permissions,
 };
 use serenity::client::Context;
 
@@ -9,6 +9,11 @@ use crate::get_state;
 
 pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::Result<()> {
     let guild_id = interaction.guild_id.context("Component not in guild")?;
+
+    interaction
+        .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+        .await?;
+
     let state = get_state(ctx).await?;
 
     let user_id = match &interaction.data.kind {
@@ -65,14 +70,12 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
         .await?;
 
     interaction
-        .create_response(
+        .edit_response(
             &ctx.http,
-            CreateInteractionResponse::UpdateMessage(
-                CreateInteractionResponseMessage::new().content(format!(
-                    "Invited <@{}> to your private temp voice",
-                    user_id.get()
-                )),
-            ),
+            EditInteractionResponse::new().content(format!(
+                "Invited <@{}> to your private temp voice",
+                user_id.get()
+            )),
         )
         .await?;
 

@@ -1,7 +1,7 @@
 use anyhow::Context as _;
 use serenity::all::{
     ComponentInteraction, ComponentInteractionDataKind, CreateInteractionResponse,
-    CreateInteractionResponseMessage,
+    EditInteractionResponse,
 };
 use serenity::client::Context;
 
@@ -41,6 +41,11 @@ pub fn format_song_option_label(title: &str, duration_ms: Option<u64>) -> String
 
 pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::Result<()> {
     let guild_id = interaction.guild_id.context("Component not in guild")?;
+
+    interaction
+        .create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+        .await?;
+
     let state = get_state(ctx).await?;
     let cache_key = interaction
         .data
@@ -93,16 +98,14 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
     if let Some(channel_id) = voice_channel_id {
         if let Err(err) = MusicQueue::connect(ctx, channel_id).await {
             interaction
-                .create_response(
+                .edit_response(
                     &ctx.http,
-                    CreateInteractionResponse::UpdateMessage(
-                        CreateInteractionResponseMessage::new()
-                            .embed(warning_embed(
-                                "Voice Connect Failed",
-                                format!("Cannot connect to your voice channel.\nDetails: {err}"),
-                            ))
-                            .components(vec![]),
-                    ),
+                    EditInteractionResponse::new()
+                        .embed(warning_embed(
+                            "Voice Connect Failed",
+                            format!("Cannot connect to your voice channel.\nDetails: {err}"),
+                        ))
+                        .components(vec![]),
                 )
                 .await?;
             return Ok(());
@@ -116,14 +119,12 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
     if let Err(err) = MusicQueue::sync_lavalink_enqueue(ctx, guild_id, &picked, should_play_now).await
     {
         interaction
-            .create_response(
+            .edit_response(
                 &ctx.http,
-                CreateInteractionResponse::UpdateMessage(
-                    CreateInteractionResponseMessage::new().embed(warning_embed(
-                        "Playback Failed",
-                        format!("Failed to start Lavalink playback.\nDetails: {err}"),
-                    )),
-                ),
+                EditInteractionResponse::new().embed(warning_embed(
+                    "Playback Failed",
+                    format!("Failed to start Lavalink playback.\nDetails: {err}"),
+                )),
             )
             .await?;
         return Ok(());
@@ -132,20 +133,18 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
     state.search_cache.write().await.cleanup();
 
     interaction
-        .create_response(
+        .edit_response(
             &ctx.http,
-            CreateInteractionResponse::UpdateMessage(
-                CreateInteractionResponseMessage::new()
-                    .embed(success_embed(
-                        "Song Added",
-                        format!(
-                            "**{}** ({})",
-                            picked.title,
-                            format_duration(picked.duration_ms)
-                        ),
-                    ))
-                    .components(vec![]),
-            ),
+            EditInteractionResponse::new()
+                .embed(success_embed(
+                    "Song Added",
+                    format!(
+                        "**{}** ({})",
+                        picked.title,
+                        format_duration(picked.duration_ms)
+                    ),
+                ))
+                .components(vec![]),
         )
         .await?;
 
