@@ -103,12 +103,14 @@ impl MusicQueue {
                 .await
                 .ok_or_else(|| anyhow::anyhow!("Songbird is not registered in the serenity client"))?;
 
-            let (call, join_result) = manager.join(guild_id, _channel_id).await;
-            join_result.context("Songbird failed to join voice channel")?;
+            let call = manager
+                .join(guild_id, _channel_id)
+                .await
+                .context("Songbird failed to join voice channel")?;
 
             // Fresh voice connection info — guaranteed valid after successful join().
             let conn_info = {
-                let call_lock = call.lock().await;
+                let call_lock: tokio::sync::MutexGuard<'_, songbird::Call> = call.lock().await;
                 call_lock.current_connection().cloned()
             };
             let conn_info =

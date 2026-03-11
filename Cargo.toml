@@ -15,7 +15,7 @@ chrono = { version = "0.4", features = ["clock"] }
 dotenvy = "0.15"
 lavalink-rs = { version = "0.15.0", default-features = true, features = ["serenity"], optional = true }
 http = { version = "1", optional = true }
-songbird = { version = "0.4", default-features = false, features = ["serenity", "driver", "rustls"], optional = true }
+songbird = { version = "0.4", default-features = false, features = ["serenity", "gateway", "driver", "rustls"], optional = true }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }

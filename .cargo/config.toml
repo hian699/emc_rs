@@ -1,0 +1,9 @@
+# Build configuration for emc_rs
+
+[env]
+# Windows: cmake 4.x removes compatibility with old cmake_minimum_required (<3.5).
+# This wrapper injects -DCMAKE_POLICY_VERSION_MINIMUM=3.5 on configure only.
+# On Linux (Docker build), these vars are ignored — libopus-dev is used instead.
+CMAKE = { value = ".cargo/cmake-compat.cmd", relative = true }
+CMAKE_GENERATOR = "NMake Makefiles"
+CMAKE_GENERATOR_x86_64-pc-windows-msvc = "NMake Makefiles"
