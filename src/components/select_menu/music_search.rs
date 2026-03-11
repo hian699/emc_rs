@@ -104,14 +104,16 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
         .create_response(
             &ctx.http,
             CreateInteractionResponse::UpdateMessage(
-                CreateInteractionResponseMessage::new().embed(success_embed(
-                    "Song Added",
-                    format!(
-                        "**{}** ({})",
-                        picked.title,
-                        format_duration(picked.duration_ms)
-                    ),
-                )),
+                CreateInteractionResponseMessage::new()
+                    .embed(success_embed(
+                        "Song Added",
+                        format!(
+                            "**{}** ({})",
+                            picked.title,
+                            format_duration(picked.duration_ms)
+                        ),
+                    ))
+                    .components(vec![]),
             ),
         )
         .await?;

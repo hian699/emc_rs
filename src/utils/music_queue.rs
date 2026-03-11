@@ -123,6 +123,8 @@ impl MusicQueue {
                     )
                 })?;
             }
+
+            Self::ensure_lavalink_voice_connected(_ctx, guild_channel.guild_id).await?;
         }
 
         Ok(())
@@ -261,24 +263,58 @@ impl MusicQueue {
             return Ok(());
         };
 
+        Self::ensure_lavalink_voice_connected(ctx, guild_id).await?;
+
         let track = track_from_song(song.clone(), encoded);
-        let mut update = UpdatePlayer {
+        let update = UpdatePlayer {
             track: Some(UpdatePlayerTrack {
                 encoded: Some(track.encoded.clone()),
                 user_data: track.user_data.clone(),
                 ..Default::default()
             }),
+            paused: Some(false),
             ..Default::default()
         };
-
-        if let Ok(info) = client.get_connection_info(guild_id, Duration::from_secs(10)).await {
-            update.voice = Some(info);
-        }
 
         client
             .update_player(guild_id, &update, false)
             .await
             .context("Failed to update Lavalink player for current song")?;
+        Ok(())
+    }
+
+    #[cfg(feature = "lavalink")]
+    async fn ensure_lavalink_voice_connected(ctx: &Context, guild_id: GuildId) -> anyhow::Result<()> {
+        let Some(client) = get_lavalink_client(ctx).await? else {
+            return Ok(());
+        };
+
+        let connection_info = client
+            .get_connection_info(guild_id, Duration::from_secs(10))
+            .await
+            .context("Missing voice connection info from Discord events")?;
+
+        client
+            .update_player(
+                guild_id,
+                &UpdatePlayer {
+                    voice: Some(connection_info),
+                    paused: Some(false),
+                    ..Default::default()
+                },
+                true,
+            )
+            .await
+            .context("Failed to initialize Lavalink voice player")?;
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "lavalink"))]
+    async fn ensure_lavalink_voice_connected(
+        _ctx: &Context,
+        _guild_id: GuildId,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
