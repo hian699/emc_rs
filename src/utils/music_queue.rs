@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use tracing::{debug, warn};
 #[cfg(feature = "lavalink")]
-use lavalink_rs::model::http::{UpdatePlayer, UpdatePlayerTrack};
-#[cfg(feature = "lavalink")]
+use lavalink_rs::model::track::{TrackData, TrackInfo};
+// UpdatePlayer / UpdatePlayerTrack not used (raw_request workaround for lavalink-rs 0.15.0 deserialization bug)
 use lavalink_rs::model::track::{TrackData, TrackInfo};
 use serenity::all::{ChannelId, GuildId};
 use serenity::client::Context;
@@ -184,74 +184,44 @@ impl MusicQueue {
                     connection_info.endpoint,
                 );
 
-                // --- Diagnostic: make the same PATCH call raw to log the response body ---
-                {
-                    let host_raw = std::env::var("LAVALINK_HOST").unwrap_or_default();
-                    let password = std::env::var("LAVALINK_PASSWORD")
-                        .or_else(|_| std::env::var("LAVALINK_SERVER_PASSWORD"))
-                        .unwrap_or_default();
-                    let is_ssl = std::env::var("LAVALINK_SSL")
-                        .ok()
-                        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
-                        .unwrap_or(false);
-                    let scheme = if is_ssl { "https" } else { "http" };
-                    // Strip protocol prefix from host if present
-                    let host_clean = host_raw
-                        .trim_start_matches("wss://")
-                        .trim_start_matches("ws://")
-                        .trim_start_matches("https://")
-                        .trim_start_matches("http://")
-                        .split(['/', '?', '#'])
-                        .next()
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string();
-                    let session_id_str = client
-                        .nodes
-                        .first()
-                        .map(|n| n.session_id.load().to_string())
-                        .unwrap_or_default();
-                    let guild_id_num = guild_id.get();
-                    let diag_url = format!(
-                        "{scheme}://{host_clean}/v4/sessions/{session_id_str}/players/{guild_id_num}?noReplace=true",
-                    );
-                    let mut voice_endpoint = connection_info.endpoint.clone();
-                    // lavalink-rs strips wss:// via connection_info.fix()
-                    voice_endpoint = voice_endpoint.replace("wss://", "");
-                    let diag_body = serde_json::json!({
-                        "voice": {
-                            "token": connection_info.token,
-                            "endpoint": voice_endpoint,
-                            "sessionId": connection_info.session_id,
-                        }
-                    });
-                    warn!(
-                        "[Lavalink-Diag] PATCH {diag_url} body={diag_body}",
-                    );
-                    match reqwest::Client::new()
-                        .patch(&diag_url)
-                        .header("Authorization", &password)
-                        .header("Content-Type", "application/json")
-                        .body(serde_json::to_string(&diag_body).unwrap_or_default())
-                        .send()
-                        .await
-                    {
-                        Ok(resp) => {
-                            let status = resp.status().as_u16();
-                            let body: String = resp.text().await.unwrap_or_else(|e| format!("<read error: {e}>"));
-                            warn!("[Lavalink-Diag] response status={status} body={body}");
-                        }
-                        Err(e) => {
-                            warn!("[Lavalink-Diag] request failed: {e}");
-                        }
+                // lavalink-rs 0.15.0 has a deserialization bug: the PATCH /v4/sessions/.../players/...
+                // response from Lavalink omits `voice.channelId`, but ConnectionInfo's
+                // channel_id field uses a custom deserializer without #[serde(default)],
+                // causing "data did not match any variant of untagged enum RequestResult".
+                // Workaround: make the PATCH call ourselves via node.http.raw_request,
+                // which returns the raw string body without deserializing, then ignore it.
+                // update_player / delete_player on client still work because they call
+                // get_node_for_guild() directly, not via the players map.
+                let node = client.nodes.first()
+                    .ok_or_else(|| anyhow::anyhow!("No Lavalink nodes available"))?;
+                let session_id_str = node.session_id.load().to_string();
+                let mut voice_endpoint = connection_info.endpoint.clone();
+                voice_endpoint = voice_endpoint.replace("wss://", ""); // matches ConnectionInfo::fix()
+                let patch_body = serde_json::json!({
+                    "voice": {
+                        "token": &connection_info.token,
+                        "endpoint": &voice_endpoint,
+                        "sessionId": &connection_info.session_id,
                     }
-                }
-                // --- End diagnostic ---
-
-                client
-                    .create_player(guild_id, connection_info)
+                });
+                let uri = node.http.path_to_uri(
+                    &format!(
+                        "/sessions/{}/players/{}?noReplace=true",
+                        session_id_str,
+                        guild_id.get()
+                    ),
+                    true,
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to build Lavalink player URI: {e}"))?;
+                node.http
+                    .raw_request(
+                        ::http::Method::PATCH,
+                        uri,
+                        Some(&patch_body),
+                    )
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to create Lavalink voice player: {e}"))?;
+                debug!("[Lavalink] player created successfully for guild {:?}", guild_id);
             }
         }
 
@@ -400,19 +370,26 @@ impl MusicQueue {
             anyhow::bail!("Selected track does not have a Lavalink encoded stream")
         };
 
-        let track = track_from_song(song.clone(), encoded);
-        let update = UpdatePlayer {
-            track: Some(UpdatePlayerTrack {
-                encoded: Some(track.encoded.clone()),
-                user_data: track.user_data.clone(),
-                ..Default::default()
-            }),
-            paused: Some(false),
-            ..Default::default()
-        };
 
-        client
-            .update_player(guild_id, &update, false)
+        let node = client.nodes.first()
+            .ok_or_else(|| anyhow::anyhow!("No Lavalink nodes available"))?;
+        let session_id_str = node.session_id.load().to_string();
+        let uri = node.http.path_to_uri(
+            &format!(
+                "/sessions/{}/players/{}?noReplace=false",
+                session_id_str,
+                guild_id.get()
+            ),
+            true,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to build Lavalink player URI: {e}"))?;
+        let encoded_clone = track.encoded.clone();
+        let patch_body = serde_json::json!({
+            "track": { "encoded": encoded_clone },
+            "paused": false
+        });
+        node.http
+            .raw_request(::http::Method::PATCH, uri, Some(&patch_body))
             .await
             .map_err(|e| anyhow::anyhow!("Failed to update Lavalink player for current song: {e}"))?;
         Ok(())
@@ -425,15 +402,22 @@ impl MusicQueue {
             return Ok(());
         };
 
-        client
-            .update_player(
-                guild_id,
-                &UpdatePlayer {
-                    track: Some(UpdatePlayerTrack::default()),
-                    ..Default::default()
-                },
-                false,
-            )
+        let node = client.nodes.first()
+            .ok_or_else(|| anyhow::anyhow!("No Lavalink nodes available"))?;
+        let session_id_str = node.session_id.load().to_string();
+        let uri = node.http.path_to_uri(
+            &format!(
+                "/sessions/{}/players/{}?noReplace=false",
+                session_id_str,
+                guild_id.get()
+            ),
+            true,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to build Lavalink stop URI: {e}"))?;
+        // null encoded track = stop playback
+        let patch_body = serde_json::json!({ "track": { "encoded": null } });
+        node.http
+            .raw_request(::http::Method::PATCH, uri, Some(&patch_body))
             .await
             .context("Failed to stop Lavalink playback")?;
         Ok(())

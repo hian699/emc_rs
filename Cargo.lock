@@ -361,6 +361,7 @@ dependencies = [
  "argon2",
  "chrono",
  "dotenvy",
+ "http",
  "lavalink-rs",
  "rand 0.8.5",
  "reqwest",
