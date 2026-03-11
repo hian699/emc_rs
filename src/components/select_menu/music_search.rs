@@ -78,6 +78,37 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
         .await
         .suppress_auto_leave(AUTO_LEAVE_SUPPRESSION_WINDOW);
 
+    // Ensure the bot is connected to the user's current voice channel.
+    // This is needed because the user may have taken time to pick from the dropdown
+    // and the bot may have disconnected, or no Lavalink player exists yet.
+    let voice_channel_id = guild_id
+        .to_guild_cached(&ctx.cache)
+        .and_then(|guild| {
+            guild
+                .voice_states
+                .get(&interaction.user.id)
+                .and_then(|vs| vs.channel_id)
+        });
+
+    if let Some(channel_id) = voice_channel_id {
+        if let Err(err) = MusicQueue::connect(ctx, channel_id).await {
+            interaction
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::UpdateMessage(
+                        CreateInteractionResponseMessage::new()
+                            .embed(warning_embed(
+                                "Voice Connect Failed",
+                                format!("Cannot connect to your voice channel.\nDetails: {err}"),
+                            ))
+                            .components(vec![]),
+                    ),
+                )
+                .await?;
+            return Ok(());
+        }
+    }
+
     let should_play_now = {
         let mut q = queue.write().await;
         q.enqueue_song(picked.clone())
