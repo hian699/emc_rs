@@ -84,6 +84,21 @@ impl MusicQueue {
                         .and_then(|state| state.channel_id)
                 });
 
+            // Start listening for voice connection info BEFORE sending OP4,
+            // so the listener is registered when Discord fires the voice events.
+            let lavalink_client = get_lavalink_client(_ctx).await?;
+            let guild_id = guild_channel.guild_id;
+            let connection_info_fut = if let Some(ref client) = lavalink_client {
+                let client = client.clone();
+                Some(tokio::spawn(async move {
+                    client
+                        .get_connection_info(guild_id, Duration::from_secs(10))
+                        .await
+                }))
+            } else {
+                None
+            };
+
             if current_bot_channel_id != Some(_channel_id) {
                 let payload = serde_json::json!({
                     "op": 4,
@@ -124,6 +139,21 @@ impl MusicQueue {
                         _channel_id.get()
                     )
                 })?;
+            }
+
+            // Now collect the connection info and create the Lavalink player.
+            // By this point the voice events have been sent by Discord and should
+            // have been received by the lavalink-rs internal handler.
+            if let (Some(client), Some(fut)) = (lavalink_client, connection_info_fut) {
+                let connection_info = fut
+                    .await
+                    .context("get_connection_info task panicked")?
+                    .context("Timed out waiting for Discord voice events (VOICE_SERVER_UPDATE / VOICE_STATE_UPDATE). Make sure both events are forwarded to lavalink-rs.")?;
+
+                client
+                    .create_player(guild_id, connection_info)
+                    .await
+                    .context("Failed to create Lavalink voice player")?;
             }
         }
 
@@ -272,8 +302,6 @@ impl MusicQueue {
             anyhow::bail!("Selected track does not have a Lavalink encoded stream")
         };
 
-        Self::ensure_lavalink_voice_connected(ctx, guild_id).await?;
-
         let track = track_from_song(song.clone(), encoded);
         let update = UpdatePlayer {
             track: Some(UpdatePlayerTrack {
@@ -292,41 +320,6 @@ impl MusicQueue {
         Ok(())
     }
 
-    #[cfg(feature = "lavalink")]
-    async fn ensure_lavalink_voice_connected(ctx: &Context, guild_id: GuildId) -> anyhow::Result<()> {
-        let Some(client) = get_lavalink_client(ctx).await? else {
-            return Ok(());
-        };
-
-        let connection_info = client
-            .get_connection_info(guild_id, Duration::from_secs(10))
-            .await
-            .context("Missing voice connection info from Discord events")?;
-
-        client
-            .create_player(guild_id, connection_info)
-            .await
-            .context("Failed to initialize Lavalink voice player")?;
-
-        Ok(())
-    }
-
-    #[cfg(not(feature = "lavalink"))]
-    async fn ensure_lavalink_voice_connected(
-        _ctx: &Context,
-        _guild_id: GuildId,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    #[cfg(not(feature = "lavalink"))]
-    async fn play_song_now(
-        _ctx: &Context,
-        _guild_id: GuildId,
-        _song: &SongItem,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
 
     #[cfg(feature = "lavalink")]
     async fn stop_remote_playback(ctx: &Context, guild_id: GuildId) -> anyhow::Result<()> {
