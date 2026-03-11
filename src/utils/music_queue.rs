@@ -152,10 +152,17 @@ impl MusicQueue {
                     .context("get_connection_info task panicked")?
                     .context("Timed out waiting for Discord voice events (VOICE_SERVER_UPDATE / VOICE_STATE_UPDATE). Make sure both events are forwarded to lavalink-rs.")?;
 
+                tracing::debug!(
+                    "[Lavalink] create_player for guild {:?} — token_len={} endpoint={:?}",
+                    guild_id,
+                    connection_info.token.len(),
+                    connection_info.endpoint,
+                );
+
                 client
                     .create_player(guild_id, connection_info)
                     .await
-                    .context("Failed to create Lavalink voice player")?;
+                    .map_err(|e| anyhow::anyhow!("Failed to create Lavalink voice player: {e}"))?;
             }
         }
 
@@ -318,7 +325,7 @@ impl MusicQueue {
         client
             .update_player(guild_id, &update, false)
             .await
-            .context("Failed to update Lavalink player for current song")?;
+            .map_err(|e| anyhow::anyhow!("Failed to update Lavalink player for current song: {e}"))?;
         Ok(())
     }
 

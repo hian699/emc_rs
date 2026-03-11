@@ -1,7 +1,8 @@
 use anyhow::Context as _;
 use serenity::all::{
-    ChannelType, CreateChannel, PermissionOverwrite, PermissionOverwriteType, Permissions, RoleId,
-    VoiceState,
+    ChannelType, Color, CreateActionRow, CreateChannel, CreateEmbed, CreateMessage,
+    CreateSelectMenu, CreateSelectMenuKind, PermissionOverwrite, PermissionOverwriteType,
+    Permissions, RoleId, VoiceState,
 };
 use serenity::client::Context;
 use tracing::warn;
@@ -157,6 +158,24 @@ pub async fn run(
                 new_state.user_id,
                 kind,
             );
+
+            if kind == TempVoiceChannelKind::Private {
+                let embed = CreateEmbed::new()
+                    .title("🔒 Private Voice — Invite Members")
+                    .description(format!(
+                        "<@{}> owns this private voice channel.\nUse the dropdown below to invite members.",
+                        new_state.user_id.get()
+                    ))
+                    .color(Color::BLURPLE);
+                let select = CreateSelectMenu::new(
+                    "private-voice-invite",
+                    CreateSelectMenuKind::User { default_users: None },
+                )
+                .placeholder("Select a member to invite...");
+                let row = CreateActionRow::SelectMenu(select);
+                let msg = CreateMessage::new().embed(embed).components(vec![row]);
+                let _ = created_channel.id.send_message(&ctx.http, msg).await;
+            }
 
             if let Some(mod_channel_id) = settings.mod_channel_id {
                 let _ = mod_channel_id
