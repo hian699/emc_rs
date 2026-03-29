@@ -19,18 +19,21 @@ use serenity::client::{Client, Context, EventHandler};
 use serenity::prelude::TypeMapKey;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
 
 use crate::state::BotState;
+use crate::utils::lavalink_client::lavalink_enabled_from_env;
 #[cfg(feature = "lavalink")]
 use crate::utils::lavalink_client::set_lavalink_runtime_context;
-use crate::utils::lavalink_client::{create_client, lavalink_enabled_from_env};
-#[cfg(feature = "lavalink")]
-use songbird::SerenityInit;
+use crate::utils::lavalink_runtime::{
+    get_lavalink_client as runtime_get_lavalink_client, init_lavalink_if_needed,
+};
+use crate::utils::logging::init_logging;
 use crate::utils::music_manager::MusicManager;
 use crate::utils::private_voice_registry::PrivateVoiceRegistry;
 use crate::utils::search_cache::SearchCache;
 use crate::utils::settings_repository::SettingsRepository;
+#[cfg(feature = "lavalink")]
+use songbird::SerenityInit;
 
 fn read_discord_token() -> anyhow::Result<String> {
     if let Ok(token) = env::var("DISCORD_TOKEN") {
@@ -87,12 +90,13 @@ impl EventHandler for Handler {
         tokio::spawn(async move {
             let init_result = tokio::time::timeout(
                 Duration::from_secs(12),
-                init_lavalink_if_needed(&lavalink_ctx, bot_user_id),
+                init_lavalink_if_needed(&lavalink_ctx, bot_user_id, "ready-event"),
             )
             .await;
 
             match init_result {
-                Ok(Ok(())) => {}
+                Ok(Ok(Some(_))) => info!("Lavalink client initialized during ready event"),
+                Ok(Ok(None)) => info!("Lavalink init skipped (disabled or retry window active)"),
                 Ok(Err(err)) => warn!("Lavalink init skipped/failed: {err}"),
                 Err(_) => warn!("Lavalink init timed out after 12s"),
             }
@@ -114,16 +118,13 @@ impl EventHandler for Handler {
                         // Try to surface the error to the user as an ephemeral reply.
                         // If the interaction was already deferred/responded we must use
                         // edit_response; otherwise use create_response.
+                        use crate::utils::discord_embed::error_embed;
                         use serenity::all::{
                             CreateInteractionResponse, CreateInteractionResponseMessage,
                             EditInteractionResponse,
                         };
-                        use crate::utils::discord_embed::error_embed;
                         let embed = error_embed("Error", format!("{err}"));
-                        let via_edit = command
-                            .get_response(&ctx.http)
-                            .await
-                            .is_ok();
+                        let via_edit = command.get_response(&ctx.http).await.is_ok();
                         if via_edit {
                             let _ = command
                                 .edit_response(
@@ -151,16 +152,13 @@ impl EventHandler for Handler {
                 tokio::spawn(async move {
                     if let Err(err) = components::dispatch_component(&ctx, &component).await {
                         error!("Component interaction failed: {err}");
+                        use crate::utils::discord_embed::error_embed;
                         use serenity::all::{
                             CreateInteractionResponse, CreateInteractionResponseMessage,
                             EditInteractionResponse,
                         };
-                        use crate::utils::discord_embed::error_embed;
                         let embed = error_embed("Error", format!("{err}"));
-                        let via_edit = component
-                            .get_response(&ctx.http)
-                            .await
-                            .is_ok();
+                        let via_edit = component.get_response(&ctx.http).await.is_ok();
                         if via_edit {
                             let _ = component
                                 .edit_response(
@@ -209,16 +207,20 @@ impl EventHandler for Handler {
                 guild_id,
                 event.endpoint
             );
-            if let (Some(guild_id), Ok(Some(client))) =
-                (guild_id, get_lavalink_client(&ctx).await)
+            if let (Some(guild_id), Ok(Some(client))) = (guild_id, get_lavalink_client(&ctx).await)
             {
                 client.handle_voice_server_update(guild_id, event.token, event.endpoint);
-                tracing::debug!("[Lavalink] forwarded voice_server_update for guild {:?}", guild_id);
-            } else {
-                tracing::warn!(
-                    "[Lavalink] voice_server_update NOT forwarded: guild={:?} (client missing or no guild_id)",
+                tracing::debug!(
+                    "[Lavalink] forwarded voice_server_update for guild {:?}",
                     guild_id
                 );
+            } else {
+                if lavalink_enabled_from_env() {
+                    tracing::debug!(
+                        "[Lavalink] voice_server_update skipped: guild={:?} (client missing or no guild_id)",
+                        guild_id
+                    );
+                }
             }
         }
     }
@@ -237,7 +239,9 @@ impl EventHandler for Handler {
             let channel_id = new.channel_id;
             tracing::debug!(
                 "[Lavalink] voice_state_update: guild={:?} user={:?} channel={:?}",
-                guild_id, user_id, channel_id
+                guild_id,
+                user_id,
+                channel_id
             );
             if let (Some(guild_id), Ok(Some(client))) = (guild_id, get_lavalink_client(&ctx).await)
             {
@@ -249,13 +253,17 @@ impl EventHandler for Handler {
                 );
                 tracing::debug!(
                     "[Lavalink] forwarded voice_state_update for guild {:?} user {:?}",
-                    guild_id, user_id
+                    guild_id,
+                    user_id
                 );
             } else {
-                tracing::warn!(
-                    "[Lavalink] voice_state_update NOT forwarded: guild={:?} user={:?} (client missing or no guild_id)",
-                    guild_id, user_id
-                );
+                if lavalink_enabled_from_env() {
+                    tracing::debug!(
+                        "[Lavalink] voice_state_update skipped: guild={:?} user={:?} (client missing or no guild_id)",
+                        guild_id,
+                        user_id
+                    );
+                }
             }
         }
 
@@ -278,102 +286,24 @@ async fn load_state() -> anyhow::Result<Arc<BotState>> {
         search_cache: Arc::new(RwLock::new(SearchCache::new())),
         private_voice_registry: Arc::new(RwLock::new(PrivateVoiceRegistry::new())),
         #[cfg(feature = "lavalink")]
-        lavalink_client: Arc::new(RwLock::new(None::<LavalinkClient>)),
+        lavalink_runtime: Arc::new(RwLock::new(crate::state::LavalinkRuntimeState::default())),
         #[cfg(feature = "lavalink")]
         lavalink_init_lock: Arc::new(tokio::sync::Mutex::new(())),
-        #[cfg(feature = "lavalink")]
-        lavalink_retry_after: Arc::new(RwLock::new(None)),
     }))
-}
-
-#[cfg(feature = "lavalink")]
-async fn init_lavalink_if_needed(
-    ctx: &Context,
-    bot_user_id: serenity::all::UserId,
-) -> anyhow::Result<()> {
-    if !lavalink_enabled_from_env() {
-        return Ok(());
-    }
-
-    let state = get_state(ctx).await?;
-    if state.lavalink_client.read().await.is_some() {
-        return Ok(());
-    }
-
-    if let Some(retry_after) = *state.lavalink_retry_after.read().await {
-        if retry_after > std::time::Instant::now() {
-            return Ok(());
-        }
-    }
-
-    let _init_guard = state.lavalink_init_lock.lock().await;
-    if state.lavalink_client.read().await.is_some() {
-        return Ok(());
-    }
-
-    if let Some(retry_after) = *state.lavalink_retry_after.read().await {
-        if retry_after > std::time::Instant::now() {
-            return Ok(());
-        }
-    }
-
-    match create_client(bot_user_id).await {
-        Ok(client) => {
-            *state.lavalink_retry_after.write().await = None;
-            let mut slot = state.lavalink_client.write().await;
-            if slot.is_none() {
-                *slot = Some(client);
-            }
-            Ok(())
-        }
-        Err(err) => {
-            *state.lavalink_retry_after.write().await =
-                Some(std::time::Instant::now() + Duration::from_secs(15));
-            Err(err)
-        }
-    }
-}
-
-#[cfg(not(feature = "lavalink"))]
-async fn init_lavalink_if_needed(
-    _ctx: &Context,
-    _bot_user_id: serenity::all::UserId,
-) -> anyhow::Result<()> {
-    Ok(())
-}
-
-#[cfg(feature = "lavalink")]
-pub async fn get_lavalink_client(ctx: &Context) -> anyhow::Result<Option<LavalinkClient>> {
-    let state = get_state(ctx).await?;
-    if let Some(client) = state.lavalink_client.read().await.clone() {
-        return Ok(Some(client));
-    }
-
-    if !lavalink_enabled_from_env() {
-        return Ok(None);
-    }
-
-    let bot_user_id = ctx.cache.current_user().id;
-    init_lavalink_if_needed(ctx, bot_user_id).await?;
-    Ok(state.lavalink_client.read().await.clone())
-}
-
-#[cfg(not(feature = "lavalink"))]
-pub async fn get_lavalink_client(_ctx: &Context) -> anyhow::Result<Option<()>> {
-    Ok(None)
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_target(false)
-        .compact()
-        .init();
+    init_logging()?;
 
     let token = read_discord_token()?;
+    info!(
+        "Starting EMC RS bot (lavalink_configured={}, sqlite_configured={})",
+        lavalink_enabled_from_env(),
+        env::var("SQLITE_DATABASE_URL").is_ok()
+    );
 
     let intents = GatewayIntents::GUILDS
         | GatewayIntents::GUILD_MESSAGES
@@ -403,4 +333,14 @@ pub async fn get_state(ctx: &Context) -> anyhow::Result<Arc<BotState>> {
     data.get::<BotStateKey>()
         .cloned()
         .context("Bot state is not initialized")
+}
+
+#[cfg(feature = "lavalink")]
+pub async fn get_lavalink_client(ctx: &Context) -> anyhow::Result<Option<LavalinkClient>> {
+    runtime_get_lavalink_client(ctx).await
+}
+
+#[cfg(not(feature = "lavalink"))]
+pub async fn get_lavalink_client(_ctx: &Context) -> anyhow::Result<Option<()>> {
+    Ok(None)
 }

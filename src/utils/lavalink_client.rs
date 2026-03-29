@@ -7,7 +7,9 @@ use anyhow::Context as _;
 #[cfg(feature = "lavalink")]
 use lavalink_rs::model::BoxFuture;
 #[cfg(feature = "lavalink")]
-use lavalink_rs::model::events::{Events, TrackEnd, TrackException, TrackStart, WebSocketClosed};
+use lavalink_rs::model::events::{
+    Events, Ready, TrackEnd, TrackException, TrackStart, WebSocketClosed,
+};
 #[cfg(feature = "lavalink")]
 use lavalink_rs::model::track::TrackLoadData;
 #[cfg(feature = "lavalink")]
@@ -18,6 +20,8 @@ use serenity::client::Context as SerenityContext;
 
 #[cfg(feature = "lavalink")]
 use crate::get_state;
+#[cfg(feature = "lavalink")]
+use crate::utils::lavalink_runtime::trigger_lavalink_reconnect;
 
 #[cfg(feature = "lavalink")]
 static LAVALINK_RUNTIME_CONTEXT: OnceLock<SerenityContext> = OnceLock::new();
@@ -57,6 +61,29 @@ fn handle_track_start(
         let mut queue = queue.write().await;
         queue.mark_playing();
         queue.clear_disconnect_timeout();
+    })
+}
+
+#[cfg(feature = "lavalink")]
+fn handle_ready(_client: LavalinkClient, session_id: String, event: &Ready) -> BoxFuture<'_, ()> {
+    let resumed = event.resumed;
+    Box::pin(async move {
+        tracing::info!(
+            "[Lavalink] Ready session_id={} resumed={}",
+            session_id,
+            resumed
+        );
+
+        let Some(ctx) = lavalink_runtime_context() else {
+            return;
+        };
+        let Ok(state) = get_state(&ctx).await else {
+            return;
+        };
+
+        for queue in state.music_manager.get_all_queues().await {
+            queue.write().await.lavalink_player_initialized = false;
+        }
     })
 }
 
@@ -138,7 +165,50 @@ fn handle_websocket_closed(
             event.reason,
             event.by_remote,
         );
+
+        let Some(ctx) = lavalink_runtime_context() else {
+            return;
+        };
+
+        trigger_lavalink_reconnect(
+            &ctx,
+            format!(
+                "websocket-closed guild={} code={} remote={}",
+                event.guild_id.0, event.code, event.by_remote
+            ),
+        );
     })
+}
+
+#[cfg(feature = "lavalink")]
+pub fn lavalink_session_ready(client: &LavalinkClient) -> bool {
+    client.nodes.first().is_some_and(|node| {
+        let session_id = node.session_id.load();
+        let trimmed = session_id.trim();
+        !trimmed.is_empty() && trimmed.parse::<usize>().is_err()
+    })
+}
+
+#[cfg(feature = "lavalink")]
+pub async fn wait_for_lavalink_ready(
+    client: &LavalinkClient,
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    tokio::time::timeout(timeout, async {
+        loop {
+            if let Some(node) = client.nodes.first() {
+                let session_id = node.session_id.load();
+                let trimmed = session_id.trim();
+                if !trimmed.is_empty() && trimmed.parse::<usize>().is_err() {
+                    return Ok(trimmed.to_string());
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .context("Timed out waiting for Lavalink node Ready event")?
 }
 
 pub fn lavalink_enabled_from_env() -> bool {
@@ -244,6 +314,7 @@ pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result
         password,
         user_id: UserId::from(bot_user_id),
         events: Events {
+            ready: Some(handle_ready),
             track_start: Some(handle_track_start),
             track_end: Some(handle_track_end),
             track_exception: Some(handle_track_exception),
@@ -257,6 +328,7 @@ pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result
         Duration::from_secs(10),
         LavalinkClient::new(
             Events {
+                ready: Some(handle_ready),
                 track_start: Some(handle_track_start),
                 track_end: Some(handle_track_end),
                 track_exception: Some(handle_track_exception),
@@ -274,6 +346,32 @@ pub async fn create_client(bot_user_id: serenity::all::UserId) -> anyhow::Result
             "Failed to connect to Lavalink at {host_for_error}. Check LAVALINK_HOST, password, SSL setting, and Docker/Dokploy network reachability"
         )
     })
+}
+
+#[cfg(all(test, feature = "lavalink"))]
+mod tests {
+    use super::extract_lavalink_host;
+
+    #[test]
+    fn extracts_host_and_ssl_from_supported_urls() {
+        assert_eq!(
+            extract_lavalink_host("ws://lavalink:2333").unwrap(),
+            ("lavalink:2333".to_string(), Some(false))
+        );
+        assert_eq!(
+            extract_lavalink_host("https://lava.example.com/v4/websocket").unwrap(),
+            ("lava.example.com".to_string(), Some(true))
+        );
+        assert_eq!(
+            extract_lavalink_host("lava.example.com:2333").unwrap(),
+            ("lava.example.com:2333".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn rejects_empty_lavalink_host() {
+        assert!(extract_lavalink_host("   ").is_err());
+    }
 }
 
 #[cfg(not(feature = "lavalink"))]

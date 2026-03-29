@@ -5,9 +5,10 @@ use serenity::all::{
 };
 use serenity::client::Context;
 
+use crate::commands::music::playback::enqueue_track;
 use crate::get_state;
 use crate::utils::discord_embed::{success_embed, warning_embed};
-use crate::utils::music_queue::{MusicQueue, AUTO_LEAVE_SUPPRESSION_WINDOW};
+use crate::utils::music_queue::{AUTO_LEAVE_SUPPRESSION_WINDOW, MusicQueue};
 
 pub fn format_duration(ms: Option<u64>) -> String {
     let Some(total_ms) = ms else {
@@ -69,14 +70,10 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
             .context("Selected song not found in cache")?
     };
 
-    let queue = if let Some(q) = state.music_manager.get_queue(guild_id).await {
-        q
-    } else {
-        state
-            .music_manager
-            .create_queue(guild_id, interaction.channel_id)
-            .await
-    };
+    let queue = state
+        .music_manager
+        .get_or_create_queue(guild_id, interaction.channel_id)
+        .await;
 
     queue
         .write()
@@ -86,38 +83,44 @@ pub async fn run(ctx: &Context, interaction: &ComponentInteraction) -> anyhow::R
     // Ensure the bot is connected to the user's current voice channel.
     // This is needed because the user may have taken time to pick from the dropdown
     // and the bot may have disconnected, or no Lavalink player exists yet.
-    let voice_channel_id = guild_id
-        .to_guild_cached(&ctx.cache)
-        .and_then(|guild| {
-            guild
-                .voice_states
-                .get(&interaction.user.id)
-                .and_then(|vs| vs.channel_id)
-        });
+    let voice_channel_id = guild_id.to_guild_cached(&ctx.cache).and_then(|guild| {
+        guild
+            .voice_states
+            .get(&interaction.user.id)
+            .and_then(|vs| vs.channel_id)
+    });
 
-    if let Some(channel_id) = voice_channel_id {
-        if let Err(err) = MusicQueue::connect(ctx, channel_id).await {
-            interaction
-                .edit_response(
-                    &ctx.http,
-                    EditInteractionResponse::new()
-                        .embed(warning_embed(
-                            "Voice Connect Failed",
-                            format!("Cannot connect to your voice channel.\nDetails: {err}"),
-                        ))
-                        .components(vec![]),
-                )
-                .await?;
-            return Ok(());
-        }
+    let Some(channel_id) = voice_channel_id else {
+        interaction
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new()
+                    .embed(warning_embed(
+                        "Voice Channel Required",
+                        "Join a voice channel again before selecting a song.",
+                    ))
+                    .components(vec![]),
+            )
+            .await?;
+        return Ok(());
+    };
+
+    if let Err(err) = MusicQueue::connect(ctx, channel_id).await {
+        interaction
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new()
+                    .embed(warning_embed(
+                        "Voice Connect Failed",
+                        format!("Cannot connect to your voice channel.\nDetails: {err}"),
+                    ))
+                    .components(vec![]),
+            )
+            .await?;
+        return Ok(());
     }
 
-    let should_play_now = {
-        let mut q = queue.write().await;
-        q.enqueue_song(picked.clone())
-    };
-    if let Err(err) = MusicQueue::sync_lavalink_enqueue(ctx, guild_id, &picked, should_play_now).await
-    {
+    if let Err(err) = enqueue_track(ctx, guild_id, &queue, picked.clone()).await {
         interaction
             .edit_response(
                 &ctx.http,

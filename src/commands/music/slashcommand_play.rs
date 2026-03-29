@@ -1,20 +1,20 @@
 use anyhow::Context as _;
 use serenity::all::{
     CommandInteraction, CommandOptionType, CreateActionRow, CreateCommand, CreateCommandOption,
-    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
+    CreateSelectMenu, CreateSelectMenuKind, EditInteractionResponse,
 };
 use serenity::client::Context;
 
 use crate::commands::get_string_option;
-use crate::components::select_menu::music_search::{format_duration, format_song_option_label};
-use crate::get_lavalink_client;
+use crate::commands::music::playback::{
+    build_search_options, enqueue_track, prepare_playback, resolve_direct_track,
+    resolve_search_results,
+};
+use crate::components::select_menu::music_search::format_duration;
 use crate::get_state;
 use crate::utils::access_control::ensure_music_channel_for_slash;
 use crate::utils::discord_embed::{info_embed, success_embed, warning_embed};
-use crate::utils::lavalink_client::search_tracks;
-use crate::utils::music_queue::{MusicQueue, AUTO_LEAVE_SUPPRESSION_WINDOW};
-use crate::utils::music_queue::SongItem;
-use crate::utils::ytdlp_helper::YtDlpHelper;
+use crate::utils::music_queue::MusicQueue;
 
 pub fn register() -> CreateCommand {
     CreateCommand::new("play")
@@ -34,31 +34,9 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
     let query = get_string_option(command, "query").context("Missing query")?;
     let state = get_state(ctx).await?;
 
-    let voice_channel_id = guild_id
-        .to_guild_cached(&ctx.cache)
-        .and_then(|guild| {
-            guild
-                .voice_states
-                .get(&command.user.id)
-                .and_then(|state| state.channel_id)
-        })
-        .context("Join a voice channel first")?;
-
     command.defer(&ctx.http).await?;
-
-    let queue = if let Some(q) = state.music_manager.get_queue(guild_id).await {
-        q
-    } else {
-        state
-            .music_manager
-            .create_queue(guild_id, command.channel_id)
-            .await
-    };
-
-    queue
-        .write()
-        .await
-        .suppress_auto_leave(AUTO_LEAVE_SUPPRESSION_WINDOW);
+    let (queue, voice_channel_id) =
+        prepare_playback(ctx, guild_id, command.user.id, command.channel_id).await?;
 
     if query.starts_with("http://") || query.starts_with("https://") {
         if let Err(err) = MusicQueue::connect(ctx, voice_channel_id).await {
@@ -74,47 +52,8 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
             return Ok(());
         }
 
-        let item = if let Some(client) = get_lavalink_client(ctx).await? {
-            match search_tracks(&client, guild_id, &query).await {
-                Ok(tracks) => {
-                    let (title, url, duration_ms, encoded) =
-                        tracks.into_iter().next().context("No tracks found")?;
-                    SongItem {
-                        title,
-                        url,
-                        duration_ms: Some(duration_ms),
-                        requested_by: command.user.tag(),
-                        lavalink_encoded_track: Some(encoded),
-                    }
-                }
-                Err(_) => {
-                    let info = YtDlpHelper::get_video_info(&query).await?;
-                    SongItem {
-                        title: info.title,
-                        url: info.webpage_url,
-                        duration_ms: info.duration.map(|d| (d * 1000.0) as u64),
-                        requested_by: command.user.tag(),
-                        lavalink_encoded_track: None,
-                    }
-                }
-            }
-        } else {
-            let info = YtDlpHelper::get_video_info(&query).await?;
-            SongItem {
-                title: info.title,
-                url: info.webpage_url,
-                duration_ms: info.duration.map(|d| (d * 1000.0) as u64),
-                requested_by: command.user.tag(),
-                lavalink_encoded_track: None,
-            }
-        };
-
-        let should_play_now = {
-            let mut q = queue.write().await;
-            q.enqueue_song(item.clone())
-        };
-        if let Err(err) = MusicQueue::sync_lavalink_enqueue(ctx, guild_id, &item, should_play_now).await
-        {
+        let item = resolve_direct_track(ctx, guild_id, &query, &command.user.tag()).await?;
+        if let Err(err) = enqueue_track(ctx, guild_id, &queue, item.clone()).await {
             command
                 .edit_response(
                     &ctx.http,
@@ -140,45 +79,7 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
         return Ok(());
     }
 
-    let songs: Vec<SongItem> = if let Some(client) = get_lavalink_client(ctx).await? {
-        match search_tracks(&client, guild_id, &query).await {
-            Ok(tracks) => tracks
-                .into_iter()
-                .map(|(title, url, duration_ms, encoded)| SongItem {
-                    title,
-                    url,
-                    duration_ms: Some(duration_ms),
-                    requested_by: command.user.tag(),
-                    lavalink_encoded_track: Some(encoded),
-                })
-                .collect(),
-            Err(_) => {
-                let results = YtDlpHelper::search(&query).await?;
-                results
-                    .into_iter()
-                    .map(|video| SongItem {
-                        title: video.title,
-                        url: video.webpage_url,
-                        duration_ms: video.duration.map(|d| (d * 1000.0) as u64),
-                        requested_by: command.user.tag(),
-                        lavalink_encoded_track: None,
-                    })
-                    .collect()
-            }
-        }
-    } else {
-        let results = YtDlpHelper::search(&query).await?;
-        results
-            .into_iter()
-            .map(|video| SongItem {
-                title: video.title,
-                url: video.webpage_url,
-                duration_ms: video.duration.map(|d| (d * 1000.0) as u64),
-                requested_by: command.user.tag(),
-                lavalink_encoded_track: None,
-            })
-            .collect()
-    };
+    let songs = resolve_search_results(ctx, guild_id, &query, &command.user.tag()).await?;
 
     if songs.is_empty() {
         command
@@ -211,16 +112,7 @@ pub async fn run(ctx: &Context, command: &CommandInteraction) -> anyhow::Result<
         return Ok(());
     }
 
-    let options: Vec<CreateSelectMenuOption> = songs
-        .iter()
-        .take(25)
-        .map(|song| {
-            CreateSelectMenuOption::new(
-                format_song_option_label(&song.title, song.duration_ms),
-                song.url.clone(),
-            )
-        })
-        .collect();
+    let options = build_search_options(&songs);
 
     let select = CreateSelectMenu::new(
         format!("music-search:{cache_key}"),

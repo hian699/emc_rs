@@ -2,14 +2,15 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
-use tracing::debug;
 use serenity::all::{ChannelId, GuildId};
 use serenity::client::Context;
 use tokio::task::JoinHandle;
+use tracing::debug;
 
 use crate::get_lavalink_client;
 use crate::get_state;
 use crate::utils::discord_embed::error_embed;
+use crate::utils::lavalink_client::wait_for_lavalink_ready;
 
 const IDLE_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const AUTO_LEAVE_SUPPRESSION_WINDOW: Duration = Duration::from_secs(20);
@@ -76,10 +77,11 @@ impl MusicQueue {
 
             // If already in the correct channel with an active Lavalink player, skip re-handshake.
             let bot_user_id = _ctx.cache.current_user().id;
-            let already_in_channel = guild_id
-                .to_guild_cached(&_ctx.cache)
-                .and_then(|g| g.voice_states.get(&bot_user_id).and_then(|vs| vs.channel_id))
-                == Some(_channel_id);
+            let already_in_channel = guild_id.to_guild_cached(&_ctx.cache).and_then(|g| {
+                g.voice_states
+                    .get(&bot_user_id)
+                    .and_then(|vs| vs.channel_id)
+            }) == Some(_channel_id);
 
             if already_in_channel {
                 let player_ready = if let Some(q) = state.music_manager.get_queue(guild_id).await {
@@ -99,9 +101,9 @@ impl MusicQueue {
             // songbird.join() sends OP4 internally and waits for BOTH VOICE_STATE_UPDATE
             // and VOICE_SERVER_UPDATE to complete before returning — guaranteeing a fresh,
             // non-stale token/endpoint with no race condition.
-            let manager = songbird::get(_ctx)
-                .await
-                .ok_or_else(|| anyhow::anyhow!("Songbird is not registered in the serenity client"))?;
+            let manager = songbird::get(_ctx).await.ok_or_else(|| {
+                anyhow::anyhow!("Songbird is not registered in the serenity client")
+            })?;
 
             // join_gateway() sends OP4 and waits for VOICE_STATE_UPDATE +
             // VOICE_SERVER_UPDATE, then returns the fresh ConnectionInfo.
@@ -113,34 +115,23 @@ impl MusicQueue {
 
             debug!(
                 "[Lavalink] songbird joined: guild={:?} endpoint={:?} session={:?} token_len={}",
-                guild_id, conn_info.endpoint, conn_info.session_id, conn_info.token.len()
+                guild_id,
+                conn_info.endpoint,
+                conn_info.session_id,
+                conn_info.token.len()
             );
             let lavalink_client = get_lavalink_client(_ctx).await?;
             let Some(client) = lavalink_client else {
                 return Ok(());
             };
 
-            // Wait for Lavalink WS Ready event so session_id is populated.
-            if let Some(node) = client.nodes.first() {
-                tokio::time::timeout(Duration::from_secs(8), async {
-                    loop {
-                        let sid = node.session_id.load();
-                        if sid.parse::<usize>().is_err() {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                })
-                .await
-                .with_context(|| "Timed out waiting for Lavalink node Ready event")?;
-            }
+            let session_id_str = wait_for_lavalink_ready(&client, Duration::from_secs(8)).await?;
 
             // PATCH Lavalink player with fresh voice data from songbird.
             let node = client
                 .nodes
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("No Lavalink nodes available"))?;
-            let session_id_str = node.session_id.load().to_string();
             // Lavalink expects endpoint without protocol prefix.
             let endpoint = conn_info.endpoint.replace("wss://", "");
             let patch_body = serde_json::json!({
@@ -168,7 +159,10 @@ impl MusicQueue {
                 .raw_request(::http::Method::PATCH, uri, Some(&patch_body))
                 .await
                 .map_err(|e| anyhow::anyhow!("Lavalink PATCH failed: {e}"))?;
-            debug!("[Lavalink] PATCH response: guild={:?} body={}", guild_id, &response);
+            debug!(
+                "[Lavalink] PATCH response: guild={:?} body={}",
+                guild_id, &response
+            );
             if response.contains("\"error\"") {
                 anyhow::bail!("Lavalink rejected voice player creation: {}", response);
             }
@@ -239,6 +233,20 @@ impl MusicQueue {
         should_start
     }
 
+    pub fn rollback_enqueue(&mut self, song: &SongItem) {
+        if let Some(index) = self.songs.iter().rposition(|queued| {
+            queued.title == song.title
+                && queued.url == song.url
+                && queued.requested_by == song.requested_by
+                && queued.duration_ms == song.duration_ms
+        }) {
+            self.songs.remove(index);
+        }
+
+        self.current = self.songs.front().cloned();
+        self.is_playing = false;
+    }
+
     pub async fn sync_lavalink_enqueue(
         _ctx: &Context,
         guild_id: GuildId,
@@ -307,7 +315,11 @@ impl MusicQueue {
     }
 
     #[cfg(feature = "lavalink")]
-    async fn play_song_now(ctx: &Context, guild_id: GuildId, song: &SongItem) -> anyhow::Result<()> {
+    async fn play_song_now(
+        ctx: &Context,
+        guild_id: GuildId,
+        song: &SongItem,
+    ) -> anyhow::Result<()> {
         let Some(client) = get_lavalink_client(ctx).await? else {
             anyhow::bail!("Lavalink client is not available")
         };
@@ -316,35 +328,43 @@ impl MusicQueue {
             anyhow::bail!("Selected track does not have a Lavalink encoded stream")
         };
 
-
-        let node = client.nodes.first()
+        let node = client
+            .nodes
+            .first()
             .ok_or_else(|| anyhow::anyhow!("No Lavalink nodes available"))?;
-        let session_id_str = node.session_id.load().to_string();
-        let uri = node.http.path_to_uri(
-            &format!(
-                "/sessions/{}/players/{}?noReplace=false",
-                session_id_str,
-                guild_id.get()
-            ),
-            true,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to build Lavalink player URI: {e}"))?;
+        let session_id_str = wait_for_lavalink_ready(&client, Duration::from_secs(5)).await?;
+        let uri = node
+            .http
+            .path_to_uri(
+                &format!(
+                    "/sessions/{}/players/{}?noReplace=false",
+                    session_id_str,
+                    guild_id.get()
+                ),
+                true,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to build Lavalink player URI: {e}"))?;
         let encoded_clone = encoded.clone();
         let patch_body = serde_json::json!({
             "track": { "encoded": encoded_clone },
             "paused": false
         });
-        let response = node.http
+        let response = node
+            .http
             .raw_request(::http::Method::PATCH, uri, Some(&patch_body))
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to update Lavalink player for current song: {e}"))?;
-        debug!("[Lavalink] play_song_now response for guild {:?}: {}", guild_id, &response);
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to update Lavalink player for current song: {e}")
+            })?;
+        debug!(
+            "[Lavalink] play_song_now response for guild {:?}: {}",
+            guild_id, &response
+        );
         if response.contains("\"error\"") {
             anyhow::bail!("Lavalink rejected track playback: {}", response);
         }
         Ok(())
     }
-
 
     #[cfg(feature = "lavalink")]
     async fn stop_remote_playback(ctx: &Context, guild_id: GuildId) -> anyhow::Result<()> {
@@ -352,18 +372,22 @@ impl MusicQueue {
             return Ok(());
         };
 
-        let node = client.nodes.first()
+        let node = client
+            .nodes
+            .first()
             .ok_or_else(|| anyhow::anyhow!("No Lavalink nodes available"))?;
-        let session_id_str = node.session_id.load().to_string();
-        let uri = node.http.path_to_uri(
-            &format!(
-                "/sessions/{}/players/{}?noReplace=false",
-                session_id_str,
-                guild_id.get()
-            ),
-            true,
-        )
-        .map_err(|e| anyhow::anyhow!("Failed to build Lavalink stop URI: {e}"))?;
+        let session_id_str = wait_for_lavalink_ready(&client, Duration::from_secs(5)).await?;
+        let uri = node
+            .http
+            .path_to_uri(
+                &format!(
+                    "/sessions/{}/players/{}?noReplace=false",
+                    session_id_str,
+                    guild_id.get()
+                ),
+                true,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to build Lavalink stop URI: {e}"))?;
         // null encoded track = stop playback
         let patch_body = serde_json::json!({ "track": { "encoded": null } });
         node.http
@@ -442,4 +466,3 @@ impl MusicQueue {
         format!("Now playing: {now_playing} | Pending: {}", self.songs.len())
     }
 }
-

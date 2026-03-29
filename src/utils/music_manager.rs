@@ -42,6 +42,23 @@ impl MusicManager {
         queue
     }
 
+    pub async fn get_or_create_queue(
+        &self,
+        guild_id: GuildId,
+        text_channel_id: ChannelId,
+    ) -> Arc<RwLock<MusicQueue>> {
+        let mut queues = self.queues.write().await;
+        queues
+            .entry(guild_id)
+            .or_insert_with(|| {
+                Arc::new(RwLock::new(MusicQueue::constructor(
+                    guild_id,
+                    text_channel_id,
+                )))
+            })
+            .clone()
+    }
+
     pub async fn delete_queue(&self, guild_id: GuildId) {
         self.queues.write().await.remove(&guild_id);
     }

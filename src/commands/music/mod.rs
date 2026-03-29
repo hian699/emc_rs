@@ -1,6 +1,7 @@
 pub mod messagecommand_play;
 pub mod messagecommand_skip;
 pub mod messagecommand_stop;
+pub mod playback;
 pub mod slashcommand_play;
 pub mod slashcommand_skip;
 pub mod slashcommand_stop;
