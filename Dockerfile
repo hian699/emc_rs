@@ -1,4 +1,9 @@
-FROM rust:1.88-slim AS builder
+# Build stage
+FROM --platform=$BUILDPLATFORM rust:1.88-slim AS builder
+
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -11,7 +16,8 @@ COPY src ./src
 
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+# Runtime stage
+FROM --platform=$TARGETPLATFORM debian:bookworm-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
